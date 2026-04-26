@@ -30,19 +30,24 @@ def run_conversion(
     sample: Optional[int] = None,
     notebook_filter: Optional[str] = None,
     updated_only: Optional[Path] = None,
+    templates_dir: Optional[Path] = None,
+    no_templates: bool = False,
 ) -> bool:
     """Run PDF conversion on backed up notebooks.
 
     Args:
-        backup_dir: Directory containing ReMarkable backup files
-        output_dir: Directory to save PDF files
-        verbose: Enable verbose logging
-        sample: Convert only first N notebooks
-        notebook_filter: Convert only this notebook (by UUID or name)
-        updated_only: File containing list of updated notebook UUIDs
+        backup_dir: Directory containing ReMarkable backup files.
+        output_dir: Directory where the resulting PDFs are written.
+        verbose: Enable verbose logging.
+        sample: Convert only the first ``N`` notebooks (testing helper).
+        notebook_filter: Convert only this notebook (by UUID or name).
+        updated_only: File containing the list of updated notebook UUIDs.
+        templates_dir: Optional override for the directory holding template
+            assets. Defaults to ``<backup_dir>/Templates`` when present.
+        no_templates: When True, skip template embedding entirely.
 
     Returns:
-        bool: True if conversion successful, False otherwise
+        bool: True if conversion successful, False otherwise.
     """
     if not backup_dir.exists():
         logging.error(f"Backup directory not found: {backup_dir}")
@@ -98,17 +103,27 @@ def run_conversion(
     if sample and sample > 0:
         notebooks = notebooks[:sample]
 
-    # Initialize template renderer if templates directory exists
-    templates_dir = backup_dir / "Templates"
+    # Initialize template renderer unless disabled by --no-templates.
     template_renderer = None
-    if templates_dir.exists():
-        try:
-            template_renderer = TemplateRenderer(templates_dir)
+    if no_templates:
+        logging.info("Template embedding disabled (--no-templates)")
+    else:
+        resolved_templates_dir = templates_dir or (backup_dir / "Templates")
+        if resolved_templates_dir.exists():
+            try:
+                template_renderer = TemplateRenderer(resolved_templates_dir)
+                logging.info(
+                    "Template rendering enabled (%d templates loaded from %s)",
+                    len(template_renderer.templates_metadata),
+                    resolved_templates_dir,
+                )
+            except Exception as e:  # noqa: BLE001
+                logging.warning(f"Failed to initialize template renderer: {e}")
+        else:
             logging.info(
-                f"Template rendering enabled ({len(template_renderer.templates_metadata)} templates loaded)"
+                "No templates directory found at %s; producing content-only PDFs",
+                resolved_templates_dir,
             )
-        except Exception as e:
-            logging.warning(f"Failed to initialize template renderer: {e}")
 
     # Convert notebooks with progress bar
     successful = 0

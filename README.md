@@ -28,10 +28,17 @@ A comprehensive Python toolkit for backing up and converting reMarkable tablet n
 
 ### 📄 PDF Conversion
 - **Hybrid Converter**: Supports both v5 and v6 .rm file formats
-- **Template Rendering**: Applies original notebook templates (grids, lines, etc.) to PDFs
-- **SVG Pipeline**: Uses rmc → SVG → PDF conversion for high quality output
+- **Vector-first Engine**: Renders v6 notebooks straight to PDF through the
+  in-process `rmc` Python API — no subprocess round-trip, no SVG rasterisation
+- **Template Rendering**: Optionally embeds original notebook templates
+  (grids, lines, dots, custom PNG/SVG backgrounds) with accurate 226 DPI → 72 pt scaling
+- **Parametric Output**: Point `--output/-o` anywhere; defaults to `<backup>/PDF`
+- **Configurable Templates**: Use `--templates-dir` for custom assets or
+  `--no-templates` to emit content-only PDFs
 - **Folder Hierarchy**: Recreates original device folder structure in output
 - **Single PDF per Notebook**: Merges all pages into one PDF file per notebook
+- **Compact Output**: Content streams are compressed on write for smaller files
+  with full vector fidelity
 - **Smart Conversion**: Only converts notebooks updated in the last backup
 - **Progress Tracking**: Visual progress bars and detailed logging
 
@@ -240,7 +247,24 @@ RemarkableSync convert --sample 5
 
 **Force convert all notebooks** (ignore sync status):
 ```bash
-RemarkableSync convert --force-all
+RemarkableSync convert --force
+```
+
+**Emit PDFs to a custom location** (e.g. a Dropbox folder):
+```bash
+RemarkableSync convert -o ~/Dropbox/rmNotes
+# or, combined with sync:
+RemarkableSync sync -o ~/Dropbox/rmNotes
+```
+
+**Disable template backgrounds** for a minimalist, ink-only export:
+```bash
+RemarkableSync convert --no-templates
+```
+
+**Use a custom template library**:
+```bash
+RemarkableSync convert --templates-dir ~/my-rm-templates
 ```
 
 ### Command Line Options
@@ -256,11 +280,14 @@ RemarkableSync convert --force-all
 - `--skip-templates`: Don't backup template files
 - `-f, --force` / `--force-backup`: Backup all files (ignore sync status)
 
-**Convert Options**:
-- `-o, --output-dir`: Output directory for PDFs (default: `backup_dir/pdfs_final`)
-- `-f, --force-all` / `--force-convert`: Convert all notebooks (ignore sync status)
-- `-s, --sample N`: Convert only first N notebooks
-- `-n, --notebook NAME`: Convert only specific notebook (by UUID or name)
+**Convert / Sync PDF Options** (apply to both `convert` and `sync`):
+- `-o, --output PATH`: Destination directory for generated PDFs (default: `<backup-dir>/PDF`)
+- `--templates-dir PATH`: Use a custom directory of template assets
+  (defaults to `<backup-dir>/Templates` when present)
+- `--no-templates`: Disable template embedding and emit content-only PDFs
+- `-f, --force` / `--force-convert`: Convert all notebooks (ignore sync status)
+- `-s, --sample N`: Convert only first N notebooks *(convert only)*
+- `-n, --notebook NAME`: Convert only specific notebook by UUID or name *(convert only)*
 
 ## How It Works
 
@@ -270,10 +297,13 @@ RemarkableSync convert --force-all
 4. **Incremental Sync**: Compares file metadata (size, modification time, hash) to determine what needs updating
 5. **Download**: Uses SCP to efficiently transfer only changed files
 6. **PDF Conversion**:
-   - Converts .rm files to SVG using rmc (for v6 format)
-   - Renders template backgrounds (grids, lines, dots)
-   - Merges templates with notebook content
-   - Combines all pages into single PDF per notebook
+   - Renders v6 `.rm` files directly to PDF via the in-process `rmc` Python API
+     (falls back to the `rmc` CLI + SVG pipeline when the API is unavailable)
+   - Optionally embeds template backgrounds (grids, lines, dots, or custom PNG/SVG assets)
+     using accurate 226 DPI → 72 pt scaling
+   - Merges templates with notebook content page-by-page (template loaded once,
+     cloned per page for O(1) amortised cost)
+   - Combines all pages into a single compressed PDF per notebook
 7. **Smart Updates**: Tracks which notebooks changed and only converts those
 
 ## File Structure
@@ -303,10 +333,17 @@ remarkable_backup/
 
 RemarkableSync includes a hybrid converter that supports both v5 and v6 .rm file formats:
 
-- **v6 Format** (newer tablets): Uses external `rmc` tool to convert .rm → SVG → PDF
-- **v5 Format** (older tablets): Direct Python-based conversion (legacy support)
-- **Template Rendering**: Custom renderer applies original device templates with accurate scaling (226 DPI → 72 DPI PDF points)
-- **Page Merging**: Uses PyPDF2 to composite template backgrounds with notebook content
+- **v6 Format** (newer tablets): Uses the `rmc` Python API (`rmc.rm_to_pdf`)
+  for direct vector PDF rendering. The legacy `rmc` CLI → SVG → PDF path is
+  kept as an automatic fallback for older installations.
+- **v5 Format** (older tablets): Direct Python-based conversion via `rmrl` when available.
+- **Template Rendering**: Custom renderer applies original device templates
+  with accurate scaling (226 DPI → 72 DPI PDF points); toggle with
+  `--no-templates` or override with `--templates-dir`.
+- **Page Merging**: Uses PyPDF2 to composite template backgrounds with
+  notebook content. Templates are loaded once per notebook and cloned per
+  page; final PDFs are written with content-stream compression for smaller
+  file sizes.
 
 ### rmc Python Package
 

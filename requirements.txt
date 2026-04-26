@@ -1,13 +1,20 @@
+# Runtime dependencies for RemarkableSync.
+# Kept intentionally lightweight; pure-Python wherever possible so the tool
+# stays "plug and play" across macOS, Linux and Windows.
+
+# SSH / SCP transport for tablet backup
 paramiko>=3.0.0
 scp>=0.14.5
-requests>=2.31.0
-tqdm>=4.66.0
-python-dateutil>=2.8.2
+
+# CLI / progress / interactive utilities
 click>=8.1.0
-pathlib2>=2.3.7
-cryptography>=41.0.0
-PyPDF2>=3.0.0
-svglib>=1.5.0
-reportlab>=4.0.0
+tqdm>=4.66.0
 keyring>=24.0.0
-rmc>=0.3.0 
+
+# PDF & vector pipeline (vector-only, no rasterisation)
+PyPDF2>=3.0.0
+reportlab>=4.0.0
+svglib>=1.5.0
+
+# reMarkable .rm v6 → PDF (in-process Python API)
+rmc>=0.3.0

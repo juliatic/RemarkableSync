@@ -16,6 +16,9 @@ def run_sync_command(
     force_backup: bool,
     force_convert: bool,
     host: str = "10.11.99.1",
+    output_dir: Optional[Path] = None,
+    templates_dir: Optional[Path] = None,
+    no_templates: bool = False,
 ) -> int:
     """Execute the sync command (backup + convert).
 
@@ -36,10 +39,18 @@ def run_sync_command(
     """
     setup_logging(verbose)
 
+    if output_dir is None:
+        output_dir = backup_dir / "PDF"
+
     print("ReMarkable Sync (Backup + Convert)")
     print("=" * 40)
     print(f"Backup directory: {backup_dir.absolute()}")
+    print(f"Output directory: {output_dir}")
     print(f"ReMarkable host: {host}")
+    if no_templates:
+        print("Template embedding: disabled (--no-templates)")
+    elif templates_dir:
+        print(f"Template directory: {templates_dir}")
 
     if not skip_templates:
         print("Template backup: Enabled")
@@ -48,7 +59,9 @@ def run_sync_command(
     if force_convert:
         print("Force convert: All notebooks will be converted")
 
-    backup_tool = ReMarkableBackup(backup_dir, password, host=host)
+    backup_tool = ReMarkableBackup(
+        backup_dir, password, host=host, output_dir=output_dir
+    )
 
     try:
         # Run backup with PDF conversion enabled
@@ -56,6 +69,8 @@ def run_sync_command(
             force_convert_all=force_convert,
             convert_to_pdf=True,
             backup_templates=not skip_templates,
+            templates_dir=templates_dir,
+            no_templates=no_templates,
         )
 
         if success:
@@ -64,9 +79,8 @@ def run_sync_command(
             if not skip_templates:
                 print(f"Templates backed up to: {backup_tool.templates_dir}")
 
-            pdfs_dir = backup_dir / "PDF"
-            if pdfs_dir.exists():
-                print(f"PDFs generated in: {pdfs_dir}")
+            if output_dir.exists():
+                print(f"PDFs generated in: {output_dir}")
             return 0
         else:
             print("\n[ERROR] Sync failed. Check logs for details.")

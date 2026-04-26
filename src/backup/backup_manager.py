@@ -42,17 +42,25 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
     - Progress tracking and detailed logging
     """
 
-    def __init__(self, backup_dir: Path, password: Optional[str] = None, host: str = "10.11.99.1"):
+    def __init__(
+        self,
+        backup_dir: Path,
+        password: Optional[str] = None,
+        host: str = "10.11.99.1",
+        output_dir: Optional[Path] = None,
+    ):
         """Initialize backup orchestrator.
 
         Args:
-            backup_dir: Local directory to store backup files
-            password: SSH password for tablet (prompted if not provided)
-            host: ReMarkable tablet IP address (default: 10.11.99.1)
+            backup_dir: Local directory to store backup files.
+            password: SSH password for tablet (prompted if not provided).
+            host: ReMarkable tablet IP address (default: ``10.11.99.1`` for USB).
+            output_dir: Directory where converted PDFs should be written.
+                Defaults to ``<backup_dir>/PDF`` to preserve historical layout.
         """
         self.backup_dir = backup_dir
         self.files_dir = backup_dir / "Notebooks"  # Clean folder name
-        self.pdfs_dir = backup_dir / "PDF"  # Clean folder name
+        self.pdfs_dir = output_dir if output_dir is not None else backup_dir / "PDF"
         self.templates_dir = backup_dir / "Templates"  # Clean folder name
         self.metadata_file = backup_dir / "sync_metadata.json"
 
@@ -324,16 +332,21 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
         force_convert_all: bool = False,
         convert_to_pdf: bool = False,
         backup_templates: bool = True,
+        templates_dir: Optional[Path] = None,
+        no_templates: bool = False,
     ) -> bool:
         """Run complete backup process with optional PDF conversion.
 
         Args:
-            force_convert_all: If True, convert all notebooks to PDF regardless of sync status
-            convert_to_pdf: If True, automatically convert notebooks to PDF using hybrid converter
-            backup_templates: If True, backup template files from the tablet (default: True)
+            force_convert_all: If True, convert all notebooks to PDF regardless of sync status.
+            convert_to_pdf: If True, automatically convert notebooks to PDF.
+            backup_templates: If True, backup template files from the tablet.
+            templates_dir: Optional override for the directory holding template
+                assets used during conversion.
+            no_templates: When True, disable template embedding entirely.
 
         Returns:
-            bool: True if backup successful, False otherwise
+            bool: True if backup successful, False otherwise.
         """
         logging.info("Starting ReMarkable backup process")
 
@@ -350,29 +363,40 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
 
         # Automatic PDF conversion using hybrid converter
         if convert_to_pdf:
-            return self.run_pdf_conversion(updated_notebook_uuids, force_convert_all)
+            return self.run_pdf_conversion(
+                updated_notebook_uuids,
+                force_convert_all,
+                templates_dir=templates_dir,
+                no_templates=no_templates,
+            )
 
         logging.info("Backup process completed successfully")
         return True
 
     def run_pdf_conversion(
-        self, updated_notebook_uuids: Set[str], force_convert_all: bool = False
+        self,
+        updated_notebook_uuids: Set[str],
+        force_convert_all: bool = False,
+        templates_dir: Optional[Path] = None,
+        no_templates: bool = False,
     ) -> bool:
         """Run PDF conversion using the converter module.
 
         Args:
-            updated_notebook_uuids: Set of notebook UUIDs that were updated during sync
-            force_convert_all: If True, convert all notebooks regardless of sync status
+            updated_notebook_uuids: Set of notebook UUIDs that were updated during sync.
+            force_convert_all: Convert all notebooks regardless of sync status.
+            templates_dir: Optional template directory override.
+            no_templates: When True, skip template embedding.
 
         Returns:
-            bool: True if conversion successful, False otherwise
+            bool: True if conversion successful, False otherwise.
         """
         from ..converter import run_conversion
 
         logging.info("Starting PDF conversion...")
 
-        # Set output directory
-        output_dir = self.backup_dir / "PDF"
+        # Honour the configured output directory (parametric, defaults to <backup>/PDF)
+        output_dir = self.pdfs_dir
 
         # Determine conversion strategy
         updated_only_file = None
@@ -404,6 +428,8 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
                 sample=None,
                 notebook_filter=None,
                 updated_only=updated_only_file,
+                templates_dir=templates_dir,
+                no_templates=no_templates,
             )
 
             # Clean up temporary file if created

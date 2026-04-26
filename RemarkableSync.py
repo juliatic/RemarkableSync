@@ -87,27 +87,50 @@ def backup(ctx, backup_dir: Path, password: Optional[str], verbose: bool,
 @click.option('--backup-dir', '-d', type=click.Path(path_type=Path),
               default=Path('./remarkable_backup'),
               help='Directory containing ReMarkable backup files')
-@click.option('--output-dir', '-o', type=click.Path(path_type=Path),
-              help='Directory to save PDF files (default: backup_dir/pdfs_final)')
+@click.option('--output', '-o', 'output_dir', type=click.Path(path_type=Path),
+              help='Destination directory for converted PDF files '
+                   '(default: <backup-dir>/PDF, preserving the historical layout)')
+@click.option('--templates-dir', type=click.Path(path_type=Path),
+              help='Directory with custom template assets to embed as page backgrounds. '
+                   'Defaults to <backup-dir>/Templates when present.')
+@click.option('--no-templates', is_flag=True,
+              help='Disable template embedding and produce content-only PDFs.')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
 @click.option('--force', '-f', is_flag=True, help='Convert all notebooks (ignore sync status)')
 @click.option('--sample', '-s', type=int, help='Convert only first N notebooks (for testing)')
 @click.option('--notebook', '-n', type=str, help='Convert only this notebook (by UUID or name)')
-def convert(backup_dir: Path, output_dir: Optional[Path], verbose: bool, force: bool,
+def convert(backup_dir: Path, output_dir: Optional[Path], templates_dir: Optional[Path],
+           no_templates: bool, verbose: bool, force: bool,
            sample: Optional[int], notebook: Optional[str]):
     """Convert backed up notebooks to PDF format.
 
-    Converts ReMarkable notebooks to PDF with template backgrounds.
+    Converts ReMarkable notebooks to PDF with optional template backgrounds.
     By default, only converts notebooks that were updated in the last backup.
     """
     from src.commands.convert_command import run_convert_command
-    sys.exit(run_convert_command(backup_dir, output_dir, verbose, force, sample, notebook))
+    sys.exit(run_convert_command(
+        backup_dir=backup_dir,
+        output_dir=output_dir,
+        verbose=verbose,
+        force_all=force,
+        sample=sample,
+        notebook=notebook,
+        templates_dir=templates_dir,
+        no_templates=no_templates,
+    ))
 
 
 @cli.command()
 @click.option('--backup-dir', '-d', type=click.Path(path_type=Path),
               default=Path('./remarkable_backup'),
               help='Directory to store backup files')
+@click.option('--output', '-o', 'output_dir', type=click.Path(path_type=Path),
+              help='Destination directory for converted PDF files '
+                   '(default: <backup-dir>/PDF).')
+@click.option('--templates-dir', type=click.Path(path_type=Path),
+              help='Directory with custom template assets to embed as page backgrounds.')
+@click.option('--no-templates', is_flag=True,
+              help='Disable template embedding during conversion.')
 @click.option('--password', '-p', type=str, help='ReMarkable SSH password')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
 @click.option('--skip-templates', is_flag=True, help='Skip backing up template files')
@@ -115,7 +138,8 @@ def convert(backup_dir: Path, output_dir: Optional[Path], verbose: bool, force: 
 @click.option('--force-convert', is_flag=True, help='Force convert all notebooks')
 @click.option('--host', '-h', type=str, help='ReMarkable IP address')
 @click.pass_context
-def sync(ctx, backup_dir: Path, password: Optional[str], verbose: bool, skip_templates: bool,
+def sync(ctx, backup_dir: Path, output_dir: Optional[Path], templates_dir: Optional[Path],
+        no_templates: bool, password: Optional[str], verbose: bool, skip_templates: bool,
         force_backup: bool, force_convert: bool, host: Optional[str]):
     """Backup and convert in one command (default workflow).
 
@@ -125,8 +149,18 @@ def sync(ctx, backup_dir: Path, password: Optional[str], verbose: bool, skip_tem
     # Use command-specific host if provided, otherwise fallback to global host
     host = host or ctx.obj.get('host', '10.11.99.1')
     from src.commands.sync_command import run_sync_command
-    sys.exit(run_sync_command(backup_dir, password, verbose, skip_templates,
-                             force_backup, force_convert, host))
+    sys.exit(run_sync_command(
+        backup_dir=backup_dir,
+        password=password,
+        verbose=verbose,
+        skip_templates=skip_templates,
+        force_backup=force_backup,
+        force_convert=force_convert,
+        host=host,
+        output_dir=output_dir,
+        templates_dir=templates_dir,
+        no_templates=no_templates,
+    ))
 
 
 def main():

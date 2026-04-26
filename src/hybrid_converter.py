@@ -16,6 +16,7 @@ This module provides:
 - Detection and reporting for v4/v3 files (limited support)
 """
 
+import copy
 import json
 import logging
 import shutil
@@ -23,6 +24,7 @@ import tempfile
 import warnings
 from pathlib import Path
 from typing import Dict, List, Optional
+
 from PyPDF2 import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 
@@ -179,85 +181,111 @@ def svg_to_pdf(svg_file: Path, pdf_file: Path) -> bool:
     return v6_converter.svg_to_pdf(svg_file, pdf_file)
 
 
+def _write_pdf(writer: PdfWriter, output_file: Path) -> bool:
+    """Write a ``PdfWriter`` to disk with stream compression enabled.
+
+    Compressing content streams typically shrinks the resulting PDF by
+    30-60% with no loss of vector or stroke precision. The fallback
+    silently skips compression on PyPDF2 builds that do not expose the
+    helper, keeping behaviour backwards compatible.
+    """
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # PyPDF2 >= 2.x ships ``compress_content_streams``; older releases do not.
+    compress = getattr(writer, "compress_identical_objects", None)
+    try:
+        for page in writer.pages:
+            page_compress = getattr(page, "compress_content_streams", None)
+            if callable(page_compress):
+                try:
+                    page_compress()
+                except Exception:  # noqa: BLE001
+                    # Compression is purely an optimisation; never fatal.
+                    pass
+        if callable(compress):
+            try:
+                compress()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+    with open(output_file, "wb") as fh:
+        writer.write(fh)
+    return output_file.exists() and output_file.stat().st_size > 0
+
+
 def merge_pdf_with_template(
     content_pdf: Path, template_pdf: Optional[Path], output_pdf: Path
 ) -> bool:
     """Merge a content PDF with a template background PDF.
 
+    The template page is loaded **once** and cloned for each content
+    page, eliminating the per-page disk read/parse that previously
+    dominated multi-page notebooks. Content is rendered on top of the
+    template so vector strokes remain crisp.
+
     Args:
-        content_pdf: Path to PDF with notebook content
-        template_pdf: Path to PDF with template background (None for no template)
-        output_pdf: Path where merged PDF should be saved
+        content_pdf: Path to PDF with notebook content.
+        template_pdf: Path to PDF with template background (``None`` for no
+            template).
+        output_pdf: Path where the merged PDF should be saved.
 
     Returns:
-        bool: True if merge successful, False otherwise
+        bool: True if merge successful, False otherwise.
     """
     try:
-        from PyPDF2 import PdfReader, PdfWriter
-
         if not content_pdf.exists():
             return False
 
         content_reader = PdfReader(str(content_pdf))
         writer = PdfWriter()
 
-        # If we have a template, merge it with the content
+        template_page = None
         if template_pdf and template_pdf.exists():
             template_reader = PdfReader(str(template_pdf))
             if len(template_reader.pages) > 0:
-                # For each content page, merge with the template
-                for content_page in content_reader.pages:
-                    try:
-                        # Load background page
-                        bg_reader = PdfReader(str(template_pdf))
-                        bg_page = bg_reader.pages[0]
-                        
-                        # Merge content on top of background
-                        bg_page.merge_page(content_page)
-                        writer.add_page(bg_page)
-                    except Exception as e:
-                        logging.warning(f"Failed to merge template for a page: {e}")
-                        writer.add_page(content_page)
-            else:
-                # No template pages, just copy content
-                for page in content_reader.pages:
-                    writer.add_page(page)
-        else:
-            # No template, just copy content
+                template_page = template_reader.pages[0]
+
+        if template_page is None:
             for page in content_reader.pages:
                 writer.add_page(page)
+        else:
+            for content_page in content_reader.pages:
+                try:
+                    # ``merge_page`` mutates the receiver, so we must clone
+                    # the template for every content page. ``copy.copy``
+                    # is dramatically cheaper than re-parsing the PDF.
+                    bg_page = copy.copy(template_page)
+                    bg_page.merge_page(content_page)
+                    writer.add_page(bg_page)
+                except Exception as e:  # noqa: BLE001
+                    logging.warning("Failed to merge template for a page: %s", e)
+                    writer.add_page(content_page)
 
-        output_pdf.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_pdf, "wb") as f:
-            writer.write(f)
+        return _write_pdf(writer, output_pdf)
 
-        return output_pdf.exists() and output_pdf.stat().st_size > 0
-
-    except Exception as e:
-        logging.debug(f"PDF template merge failed: {e}")
+    except Exception as e:  # noqa: BLE001
+        logging.debug("PDF template merge failed: %s", e)
         return False
 
 
 def merge_pdfs(pdf_files: List[Path], output_file: Path) -> bool:
     """Merge multiple PDF files into a single PDF document.
 
-    Takes a list of individual page PDFs and combines them into
-    a single multi-page PDF document, maintaining page order.
+    Takes a list of individual page PDFs and combines them into a
+    single multi-page PDF document, maintaining page order. Content
+    streams are compressed on write to minimise file size while
+    preserving vector quality.
 
     Args:
-        pdf_files: List of PDF file paths to merge (in order)
-        output_file: Path where merged PDF should be saved
+        pdf_files: List of PDF file paths to merge (in order).
+        output_file: Path where the merged PDF should be saved.
 
     Returns:
-        bool: True if merge successful, False otherwise
-
-    Note:
-        Uses PyPDF2 for PDF manipulation. Creates parent directories
-        if they don't exist.
+        bool: True if merge successful, False otherwise.
     """
     try:
-        from PyPDF2 import PdfReader, PdfWriter
-
         writer = PdfWriter()
 
         for pdf_file in pdf_files:
@@ -265,24 +293,22 @@ def merge_pdfs(pdf_files: List[Path], output_file: Path) -> bool:
                 try:
                     reader = PdfReader(str(pdf_file))
                     page_count = len(reader.pages)
-                    logging.debug(f"Adding {page_count} pages from {pdf_file.name}")
+                    logging.debug("Adding %d pages from %s", page_count, pdf_file.name)
                     for page in reader.pages:
                         writer.add_page(page)
-                except Exception as e:
-                    logging.error(f"Failed to read PDF file {pdf_file}: {e}")
+                except Exception as e:  # noqa: BLE001
+                    logging.error("Failed to read PDF file %s: %s", pdf_file, e)
             else:
-                logging.warning(f"PDF chunk missing: {pdf_file}")
+                logging.warning("PDF chunk missing: %s", pdf_file)
 
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_file, "wb") as f:
-            writer.write(f)
-        
-        logging.debug(f"Final PDF written to {output_file} (Total pages: {len(writer.pages)})")
+        ok = _write_pdf(writer, output_file)
+        logging.debug(
+            "Final PDF written to %s (pages: %d)", output_file, len(writer.pages)
+        )
+        return ok
 
-        return output_file.exists() and output_file.stat().st_size > 0
-
-    except Exception as e:
-        logging.debug(f"PDF merge failed: {e}")
+    except Exception as e:  # noqa: BLE001
+        logging.debug("PDF merge failed: %s", e)
         return False
 
 

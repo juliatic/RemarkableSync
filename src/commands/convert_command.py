@@ -15,19 +15,27 @@ def run_convert_command(
     force_all: bool,
     sample: Optional[int],
     notebook: Optional[str],
+    templates_dir: Optional[Path] = None,
+    no_templates: bool = False,
 ) -> int:
     """Execute the convert command.
 
     Args:
-        backup_dir: Directory containing ReMarkable backup files
-        output_dir: Directory to save PDF files
-        verbose: Enable verbose logging
-        force_all: Convert all notebooks (ignore sync status)
-        sample: Convert only first N notebooks
-        notebook: Convert only this notebook (by UUID or name)
+        backup_dir: Directory containing ReMarkable backup files.
+        output_dir: Destination directory for the generated PDFs. Defaults to
+            ``<backup_dir>/PDF`` to preserve the historical layout.
+        verbose: Enable verbose logging.
+        force_all: Convert all notebooks (ignore sync status).
+        sample: Convert only the first ``N`` notebooks (testing helper).
+        notebook: Convert only this notebook (by UUID or display name).
+        templates_dir: Custom directory with template assets to embed as page
+            backgrounds. When ``None``, ``<backup_dir>/Templates`` is used if it
+            exists.
+        no_templates: When ``True`` skip template embedding entirely and emit
+            content-only PDFs.
 
     Returns:
-        Exit code (0 for success, 1 for failure)
+        Exit code (``0`` for success, non-zero for failure).
     """
     setup_logging(verbose)
 
@@ -35,7 +43,8 @@ def run_convert_command(
         print(f"[ERROR] Backup directory not found: {backup_dir}")
         return 1
 
-    # Set default output directory
+    # Default output directory mirrors the historical layout used by the backup
+    # tooling so existing users do not see a behavioural change.
     if not output_dir:
         output_dir = backup_dir / "PDF"
 
@@ -43,6 +52,10 @@ def run_convert_command(
     print("=" * 40)
     print(f"Backup directory: {backup_dir}")
     print(f"Output directory: {output_dir}")
+    if no_templates:
+        print("Template embedding: disabled (--no-templates)")
+    elif templates_dir:
+        print(f"Template directory: {templates_dir}")
 
     if force_all:
         print("Force mode: Converting all notebooks")
@@ -55,7 +68,6 @@ def run_convert_command(
         # Determine updated notebooks list
         updated_only_file = None
         if not force_all and not notebook and not sample:
-            # Check if there's an updated_notebooks.txt from recent backup
             updated_list = backup_dir / "updated_notebooks.txt"
             if updated_list.exists():
                 updated_only_file = updated_list
@@ -68,6 +80,8 @@ def run_convert_command(
             sample=sample,
             notebook_filter=notebook,
             updated_only=updated_only_file,
+            templates_dir=templates_dir,
+            no_templates=no_templates,
         )
 
         return 0 if success else 1

@@ -9,7 +9,12 @@ from ..utils.logging import setup_logging
 
 
 def run_backup_command(
-    backup_dir: Path, password: Optional[str], verbose: bool, skip_templates: bool, force: bool
+    backup_dir: Path,
+    password: Optional[str],
+    verbose: bool,
+    skip_templates: bool,
+    force: bool,
+    host: str = "10.11.99.1",
 ) -> int:
     """Execute the backup command.
 
@@ -19,6 +24,7 @@ def run_backup_command(
         verbose: Enable verbose logging
         skip_templates: Skip backing up template files
         force: Force backup all files (ignore sync status)
+        host: ReMarkable tablet IP address
 
     Returns:
         Exit code (0 for success, 1 for failure)
@@ -28,13 +34,14 @@ def run_backup_command(
     print("ReMarkable Tablet Backup")
     print("=" * 40)
     print(f"Backup directory: {backup_dir.absolute()}")
+    print(f"ReMarkable host: {host}")
 
     if not skip_templates:
         print("Template backup: Enabled")
     if force:
         print("Force mode: All files will be backed up")
 
-    backup_tool = ReMarkableBackup(backup_dir, password)
+    backup_tool = ReMarkableBackup(backup_dir, password, host=host)
 
     try:
         # For now, we'll use the existing run_backup method

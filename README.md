@@ -20,7 +20,7 @@ A comprehensive Python toolkit for backing up and converting reMarkable tablet n
 ## Features
 
 ### 🔄 Backup & Sync
-- **USB Connection**: Connects to reMarkable tablet over USB (10.11.99.1)
+- **Flexible Connection**: Connects via USB (10.11.99.1) or WiFi (with `--host`)
 - **Incremental Sync**: Only downloads files that have changed since last backup
 - **Complete Backup**: Backs up all notebooks, documents, and metadata
 - **Template Support**: Automatically backs up template files from the device
@@ -81,8 +81,20 @@ brew untap jeffsteinbok/remarkablesync
 **For users with Python 3.11+** installed:
 
 ```bash
-# Install using pip (recommended: use a virtual environment)
+# 1. Create a virtual environment
+python3 -m venv .venv
+
+# 2. Activate the virtual environment
+# On macOS/Linux:
+source .venv/bin/activate
+# On Windows:
+.venv\Scripts\activate
+
+# 3. Install RemarkableSync
 pip install remarkablesync
+
+# 4. Run the application
+RemarkableSync backup
 ```
 
 **Updating to latest version:**
@@ -114,7 +126,13 @@ pip install --upgrade remarkablesync
    cd RemarkableSync
    ```
 
-2. Install dependencies:
+2. Create and activate a virtual environment:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
+   ```
+
+3. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
@@ -158,9 +176,20 @@ python3 RemarkableSync.py
 ```
 
 This will:
-1. Connect to your ReMarkable tablet via USB
+1. Connect to your ReMarkable tablet via USB (or WiFi)
 2. Backup all changed files (including templates)
 3. Convert only notebooks that were updated in this backup
+
+#### Connecting via WiFi
+
+If your tablet and computer are on the same WiFi network, you can sync without a USB cable:
+
+1. Enable WiFi on your tablet and ensure it's connected to your network
+2. Find your tablet's IP address (Settings → Help → Copyright and licenses)
+3. Run with the `--host` (or `-h`) option:
+   ```bash
+   RemarkableSync --host 192.168.68.53
+   ```
 
 #### Individual Commands
 
@@ -192,6 +221,9 @@ RemarkableSync sync --skip-templates
 
 # Verbose output
 RemarkableSync sync -v
+
+# Connect via WiFi (shorthand defaults to sync)
+RemarkableSync --host 192.168.68.53
 ```
 
 #### Testing and Selective Conversion
@@ -215,6 +247,7 @@ RemarkableSync convert --force-all
 
 **Common Options** (all commands):
 - `-d, --backup-dir`: Directory for backups (default: `./remarkable_backup`)
+- `-h, --host`: ReMarkable IP address (default: `10.11.99.1`)
 - `-v, --verbose`: Enable debug logging
 - `--version`: Show version and repository information
 
@@ -231,7 +264,7 @@ RemarkableSync convert --force-all
 
 ## How It Works
 
-1. **Connection**: Establishes SSH connection to ReMarkable tablet at 10.11.99.1
+1. **Connection**: Establishes SSH connection to ReMarkable tablet (default: 10.11.99.1)
 2. **File Discovery**: Scans `/home/root/.local/share/remarkable/xochitl/` for notebook files
 3. **Template Backup**: Downloads template files from `/usr/share/remarkable/templates/`
 4. **Incremental Sync**: Compares file metadata (size, modification time, hash) to determine what needs updating
@@ -299,9 +332,9 @@ Files are only downloaded if:
 ## Troubleshooting
 
 ### Connection Issues
-- Ensure ReMarkable is connected via USB
-- Verify the tablet shows up as network interface
-- Try pinging `10.11.99.1`
+- Ensure ReMarkable is connected via USB OR on the same WiFi network
+- Verify the tablet shows up as network interface (USB) or is reachable (WiFi)
+- Try pinging the host (e.g., `ping 10.11.99.1` or `ping 192.168.1.15`)
 - Check SSH password from tablet settings
 
 ### Permission Errors

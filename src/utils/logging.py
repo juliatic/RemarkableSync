@@ -20,4 +20,4 @@ def setup_logging(verbose: bool = False):
     # Suppress verbose debug messages from third-party libraries
     logging.getLogger("svglib.svglib").setLevel(logging.WARNING)
     logging.getLogger("reportlab").setLevel(logging.WARNING)
-    logging.getLogger("paramiko").setLevel(logging.WARNING)
+    logging.getLogger("paramiko").setLevel(level)

@@ -20,6 +20,9 @@ except ImportError:
     KEYRING_AVAILABLE = False
     logging.warning("keyring library not available - password saving disabled")
 
+# Set paramiko logging level to DEBUG to see handshake details
+logging.getLogger("paramiko").setLevel(logging.DEBUG)
+
 
 class ReMarkableConnection:
     """Handles SSH connection to ReMarkable tablet.
@@ -180,6 +183,8 @@ class ReMarkableConnection:
                             look_for_keys=False,
                         )
 
+                        logging.info("SSH Authentication successful!")
+
                         transport = self.ssh_client.get_transport()
                         if transport is None:
                             raise ConnectionError("Failed to get SSH transport")
@@ -225,11 +230,13 @@ class ReMarkableConnection:
                                     return False
                         else:
                             # User-entered password was wrong
+                            logging.error("Authentication failed: Incorrect password or rejected by server")
                             print("\nAuthentication failed. Please check your password.")
                             self.password = None
                             password_attempt += 1
                             break
                     except (paramiko.SSHException, OSError) as e:
+                        logging.error("SSH Connection Error: %s", str(e), exc_info=True)
                         logging.warning("Connection attempt %d failed: %s", i + 1, e)
                         if self.ssh_client:
                             try:
@@ -296,7 +303,10 @@ class ReMarkableConnection:
             - mtime: Unix timestamp of last modification
             - size: File size in bytes
         """
-        command = f"find {remote_path} -type f -exec stat -c '%Y %s %n' {{}} \\;"
+        # Find all files recursively in the remote directory.
+        # Find all files in the remote directory.
+        # We use '!' instead of '-not' for BusyBox compatibility.
+        command = f"find {remote_path} ! -type d -exec stat -c '%Y %s %n' {{}} \\;"
         stdout, stderr, exit_code = self.execute_command(command)
 
         if exit_code != 0:

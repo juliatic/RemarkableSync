@@ -15,6 +15,7 @@ def run_sync_command(
     skip_templates: bool,
     force_backup: bool,
     force_convert: bool,
+    host: str = "10.11.99.1",
 ) -> int:
     """Execute the sync command (backup + convert).
 
@@ -28,6 +29,7 @@ def run_sync_command(
         skip_templates: Skip backing up template files
         force_backup: Force backup all files
         force_convert: Force convert all notebooks
+        host: ReMarkable tablet IP address
 
     Returns:
         Exit code (0 for success, 1 for failure)
@@ -37,6 +39,7 @@ def run_sync_command(
     print("ReMarkable Sync (Backup + Convert)")
     print("=" * 40)
     print(f"Backup directory: {backup_dir.absolute()}")
+    print(f"ReMarkable host: {host}")
 
     if not skip_templates:
         print("Template backup: Enabled")
@@ -45,7 +48,7 @@ def run_sync_command(
     if force_convert:
         print("Force convert: All notebooks will be converted")
 
-    backup_tool = ReMarkableBackup(backup_dir, password)
+    backup_tool = ReMarkableBackup(backup_dir, password, host=host)
 
     try:
         # Run backup with PDF conversion enabled

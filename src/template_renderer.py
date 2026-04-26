@@ -88,15 +88,11 @@ class TemplateRenderer:
         else:
             filename = template_name
 
-        # Look for .template file
-        template_file = self.templates_dir / f"{filename}.template"
-        if template_file.exists():
-            return template_file
-
-        # Try without extension
-        template_file = self.templates_dir / filename
-        if template_file.exists():
-            return template_file
+        # Try with common extensions
+        for ext in [".template", ".png", ".svg", ".jpg", ".jpeg"]:
+            template_file = self.templates_dir / f"{filename}{ext}"
+            if template_file.exists():
+                return template_file
 
         logging.debug(f"Template file not found for: {template_name}")
         return None
@@ -116,6 +112,10 @@ class TemplateRenderer:
         template_file = self.get_template_file(template_name)
         if not template_file:
             return None
+
+        # Don't try to parse images as JSON
+        if template_file.suffix.lower() in [".png", ".svg", ".jpg", ".jpeg"]:
+            return {}
 
         try:
             with open(template_file, "r", encoding="utf-8") as f:
@@ -143,24 +143,36 @@ class TemplateRenderer:
             # For blank templates, create a blank PDF
             return self._create_blank_pdf(output_pdf)
 
-        template_data = self.load_template(template_name)
-        if not template_data:
-            logging.debug(f"Could not load template {template_name}, using blank")
-            return self._create_blank_pdf(output_pdf)
-
         try:
             # Create PDF with ReMarkable dimensions
             c = canvas.Canvas(
                 str(output_pdf), pagesize=(self.REMARKABLE_WIDTH, self.REMARKABLE_HEIGHT)
             )
 
-            # Basic rendering: draw grid lines if it's a grid template
-            if "Grid" in template_name or "grid" in template_name.lower():
-                self._render_grid(c, template_data)
-            elif "Lines" in template_name or "lines" in template_name.lower():
-                self._render_lines(c, template_data)
-            elif "Dots" in template_name or "dots" in template_name.lower():
-                self._render_dots(c, template_data)
+            # 1. Try to render as an image first if it's a custom template
+            if not any(p in template_name.lower() for p in ["grid", "lines", "dots"]):
+                if self._render_image_background(c, template_name):
+                    c.save()
+                    return output_pdf.exists()
+
+            # 2. Otherwise, load template metadata for patterns
+            template_data = self.load_template(template_name)
+            
+            # Pattern rendering
+            if template_data is not None:
+                if "Grid" in template_name or "grid" in template_name.lower():
+                    self._render_grid(c, template_data)
+                elif "Lines" in template_name or "lines" in template_name.lower():
+                    self._render_lines(c, template_data)
+                elif "Dots" in template_name or "dots" in template_name.lower():
+                    self._render_dots(c, template_data)
+                else:
+                    # Fallback to image if not a pattern
+                    if not self._render_image_background(c, template_name):
+                        logging.debug(f"No pattern or image found for template {template_name}")
+            else:
+                # No data and no image found earlier
+                logging.debug(f"No data found for template {template_name}")
 
             c.save()
             return output_pdf.exists()
@@ -283,3 +295,47 @@ class TemplateRenderer:
                 c.circle(x, y, dot_radius, fill=1, stroke=0)
                 x += dot_spacing_points
             y += dot_spacing_points
+
+    def _render_image_background(self, c: canvas.Canvas, template_name: str) -> bool:
+        """Try to render a template from an image file (PNG/SVG).
+
+        Args:
+            c: ReportLab canvas to draw on
+            template_name: Name of the template
+
+        Returns:
+            bool: True if image was found and rendered, False otherwise
+        """
+        image_path = self.get_template_file(template_name)
+        if not image_path:
+            return False
+
+        try:
+            if image_path.suffix.lower() == ".svg":
+                # Convert SVG to drawing then draw on canvas
+                from svglib.svglib import svg2rlg
+                drawing = svg2rlg(str(image_path))
+                if drawing:
+                    # Scale to fit ReMarkable dimensions
+                    scale_x = self.REMARKABLE_WIDTH / drawing.width
+                    scale_y = self.REMARKABLE_HEIGHT / drawing.height
+                    c.saveState()
+                    c.scale(scale_x, scale_y)
+                    from reportlab.graphics import renderPDF
+                    renderPDF.draw(drawing, c, 0, 0)
+                    c.restoreState()
+                    return True
+            else:
+                # Standard image (PNG, etc.)
+                c.drawImage(
+                    str(image_path),
+                    0,
+                    0,
+                    width=self.REMARKABLE_WIDTH,
+                    height=self.REMARKABLE_HEIGHT,
+                )
+                return True
+        except Exception as e:
+            logging.debug(f"Failed to render image background {image_path}: {e}")
+
+        return False

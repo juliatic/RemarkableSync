@@ -29,6 +29,43 @@ from .connection import ReMarkableConnection
 from .metadata import FileMetadata
 
 
+def _verify_download_size(local_path: Path, remote_file: Dict) -> bool:
+    """Verify a freshly downloaded file matches the remote size.
+
+    SCP transfers can silently truncate when the connection drops
+    mid-stream — paramiko raises in some cases but not all, and a
+    zero-byte or short file would otherwise be recorded as "synced"
+    and skipped on subsequent runs. Comparing the on-disk size with
+    the remote-reported size is a cheap last-line-of-defence check.
+
+    Returns:
+        True if the file is present and matches the expected size,
+        False if it is missing or truncated. The caller should skip
+        metadata recording when this returns False so the next run
+        retries the download.
+    """
+    if not local_path.exists():
+        logging.warning("Downloaded file vanished: %s", local_path)
+        return False
+    expected = remote_file.get("size")
+    if expected is None:
+        return True  # Nothing to compare against.
+    actual = local_path.stat().st_size
+    if actual != expected:
+        logging.warning(
+            "Size mismatch for %s: expected %d bytes, got %d (will retry next run)",
+            local_path.name,
+            expected,
+            actual,
+        )
+        try:
+            local_path.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
 class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
     """Main backup orchestrator for ReMarkable tablet.
 
@@ -127,10 +164,14 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
                             return False, set()
                         self.connection.scp_client.get(remote_file["path"], str(local_path))
 
+                        # Integrity guard: detect a truncated/incomplete
+                        # transfer before we record metadata that would
+                        # mark the file as up-to-date next run.
+                        if not _verify_download_size(local_path, remote_file):
+                            continue
+
                         # Update metadata
                         self.metadata.update_file_metadata(remote_file, local_path)
-
-                        # Track notebook UUID if this file belongs to a notebook
                         # Handle both top-level files and files in subdirectories
                         relative_path = os.path.relpath(
                             remote_file["path"], self.remote_xochitl_dir
@@ -234,6 +275,9 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
                             return False
                         self.connection.scp_client.get(remote_file["path"], str(local_path))
 
+                        if not _verify_download_size(local_path, remote_file):
+                            continue
+
                         # Update metadata
                         self.metadata.update_file_metadata(remote_file, local_path)
 
@@ -334,6 +378,7 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
         backup_templates: bool = True,
         templates_dir: Optional[Path] = None,
         no_templates: bool = False,
+        strict: bool = False,
     ) -> bool:
         """Run complete backup process with optional PDF conversion.
 
@@ -344,6 +389,7 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
             templates_dir: Optional override for the directory holding template
                 assets used during conversion.
             no_templates: When True, disable template embedding entirely.
+            strict: When True, abort notebooks with unresolved/missing pages.
 
         Returns:
             bool: True if backup successful, False otherwise.
@@ -368,6 +414,7 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
                 force_convert_all,
                 templates_dir=templates_dir,
                 no_templates=no_templates,
+                strict=strict,
             )
 
         logging.info("Backup process completed successfully")
@@ -379,6 +426,7 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
         force_convert_all: bool = False,
         templates_dir: Optional[Path] = None,
         no_templates: bool = False,
+        strict: bool = False,
     ) -> bool:
         """Run PDF conversion using the converter module.
 
@@ -387,6 +435,7 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
             force_convert_all: Convert all notebooks regardless of sync status.
             templates_dir: Optional template directory override.
             no_templates: When True, skip template embedding.
+            strict: When True, abort notebooks with unresolved/missing pages.
 
         Returns:
             bool: True if conversion successful, False otherwise.
@@ -430,6 +479,7 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
                 updated_only=updated_only_file,
                 templates_dir=templates_dir,
                 no_templates=no_templates,
+                strict=strict,
             )
 
             # Clean up temporary file if created

@@ -16,7 +16,6 @@ This module provides:
 - Detection and reporting for v4/v3 files (limited support)
 """
 
-import copy
 import json
 import logging
 import shutil
@@ -35,10 +34,38 @@ REMARKABLE_HEIGHT_POINTS = 1872 * 72 / 226  # ~596.7 pts
 
 # Import modular converter classes
 from .converters import V4Converter, V5Converter, V6Converter
+from .page_resolver import PageResolver, ResolutionReport, detect_rm_version
 from .template_renderer import TemplateRenderer
 
 # Suppress warnings from third-party libraries to reduce output noise
 warnings.filterwarnings("ignore")
+
+
+class PageResolutionError(Exception):
+    """Raised in strict mode when a notebook has unresolved/missing pages.
+
+    Carries enough structured detail for the CLI to render a useful
+    summary without having to re-parse log lines.
+    """
+
+    def __init__(
+        self,
+        notebook_name: str,
+        missing_pages: List[str],
+        parse_errors: List[str],
+    ) -> None:
+        self.notebook_name = notebook_name
+        self.missing_pages = list(missing_pages)
+        self.parse_errors = list(parse_errors)
+        details = []
+        if missing_pages:
+            details.append(f"missing .rm files: {len(missing_pages)}")
+        if parse_errors:
+            details.append(f"parse errors: {len(parse_errors)}")
+        super().__init__(
+            f"Strict mode: notebook {notebook_name!r} has unresolved pages "
+            f"({', '.join(details) or 'unknown reason'})"
+        )
 
 
 def setup_logging(verbose: bool = False):
@@ -127,23 +154,15 @@ def find_notebooks(backup_dir: Path) -> List[Dict]:
                 notebook_info["v3_files"] = []
 
                 for rm_file in notebook_info["rm_files"]:
-                    try:
-                        # Read file header to determine version format
-                        # Each .rm file starts with a version identifier in ASCII
-                        with open(rm_file, "rb") as f:
-                            header = f.read(50).decode("ascii", errors="ignore")
-                            # Classify files by version for appropriate conversion tool
-                            if "version=6" in header:
-                                notebook_info["v6_files"].append(rm_file)
-                            elif "version=5" in header:
-                                notebook_info["v5_files"].append(rm_file)
-                            elif "version=4" in header:
-                                notebook_info["v4_files"].append(rm_file)
-                            elif "version=3" in header:
-                                notebook_info["v3_files"].append(rm_file)
-                    except Exception:
-                        # Ignore files that can't be read or don't have valid headers
-                        pass
+                    version = detect_rm_version(rm_file, default=0)
+                    if version == 6:
+                        notebook_info["v6_files"].append(rm_file)
+                    elif version == 5:
+                        notebook_info["v5_files"].append(rm_file)
+                    elif version == 4:
+                        notebook_info["v4_files"].append(rm_file)
+                    elif version == 3:
+                        notebook_info["v3_files"].append(rm_file)
 
                 # Include in conversion list if it's a folder or has convertible content
                 # - CollectionType: Folders (included for directory structure)
@@ -215,15 +234,81 @@ def _write_pdf(writer: PdfWriter, output_file: Path) -> bool:
     return output_file.exists() and output_file.stat().st_size > 0
 
 
+def _format_pdf_date(timestamp_ms: Optional[str]) -> Optional[str]:
+    """Format a millisecond-precision timestamp string as a PDF ``D:`` date.
+
+    reMarkable ``.metadata`` stores timestamps as decimal millisecond
+    strings since the epoch. PDF expects ``D:YYYYMMDDHHmmSSOHH'mm'`` per
+    the PDF 1.7 spec; we emit the ``Z`` (UTC) variant which is the
+    interoperable subset every viewer accepts.
+    """
+    if not timestamp_ms:
+        return None
+    try:
+        from datetime import datetime, timezone
+
+        ts = int(timestamp_ms) / 1000.0
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        return dt.strftime("D:%Y%m%d%H%M%SZ")
+    except (TypeError, ValueError):
+        return None
+
+
+def _stamp_pdf_metadata(pdf_path: Path, notebook: Dict) -> None:
+    """Embed notebook metadata (title, dates, app marker) into ``pdf_path``.
+
+    Reads the source ``.metadata`` JSON when available so the resulting
+    PDF carries the same display name and timestamps the device showed.
+    Failures are logged at DEBUG only — bad metadata must never break
+    the conversion pipeline.
+    """
+    try:
+        title = notebook.get("name", "")
+        metadata_file = notebook.get("metadata_file")
+        created = modified = None
+        if metadata_file and Path(metadata_file).exists():
+            try:
+                with open(metadata_file, "r", encoding="utf-8") as fh:
+                    raw = json.load(fh)
+                created = _format_pdf_date(raw.get("createdTime"))
+                modified = _format_pdf_date(raw.get("lastModified"))
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        info = {"/Title": title, "/Producer": "RemarkableSync"}
+        if created:
+            info["/CreationDate"] = created
+        if modified:
+            info["/ModDate"] = modified
+
+        # Round-trip the PDF through PdfWriter just to attach metadata.
+        reader = PdfReader(str(pdf_path))
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        writer.add_metadata(info)
+        with open(pdf_path, "wb") as fh:
+            writer.write(fh)
+    except Exception as exc:  # noqa: BLE001
+        logging.debug("Failed to stamp metadata on %s: %s", pdf_path, exc)
+
+
 def merge_pdf_with_template(
     content_pdf: Path, template_pdf: Optional[Path], output_pdf: Path
 ) -> bool:
     """Merge a content PDF with a template background PDF.
 
-    The template page is loaded **once** and cloned for each content
-    page, eliminating the per-page disk read/parse that previously
-    dominated multi-page notebooks. Content is rendered on top of the
-    template so vector strokes remain crisp.
+    For every content page a *fresh* copy of the template page is read
+    from disk. ``PageObject.merge_page`` mutates the receiver's
+    ``/Contents`` and ``/Resources`` references in place; sharing a
+    single ``PageObject`` (even via ``copy.copy``) across pages causes
+    one page's strokes to bleed onto subsequent pages or causes the
+    background to render only on the first page. Re-reading the template
+    is cheap relative to PDF rendering and removes that whole class of
+    cross-page contamination bugs.
+
+    Content is drawn *on top of* the template so vector strokes remain
+    crisp and visible.
 
     Args:
         content_pdf: Path to PDF with notebook content.
@@ -241,22 +326,24 @@ def merge_pdf_with_template(
         content_reader = PdfReader(str(content_pdf))
         writer = PdfWriter()
 
-        template_page = None
-        if template_pdf and template_pdf.exists():
-            template_reader = PdfReader(str(template_pdf))
-            if len(template_reader.pages) > 0:
-                template_page = template_reader.pages[0]
+        has_template = bool(
+            template_pdf
+            and template_pdf.exists()
+            and len(PdfReader(str(template_pdf)).pages) > 0
+        )
 
-        if template_page is None:
+        if not has_template:
             for page in content_reader.pages:
                 writer.add_page(page)
         else:
             for content_page in content_reader.pages:
                 try:
-                    # ``merge_page`` mutates the receiver, so we must clone
-                    # the template for every content page. ``copy.copy``
-                    # is dramatically cheaper than re-parsing the PDF.
-                    bg_page = copy.copy(template_page)
+                    # Re-read the template per iteration so each background
+                    # page has its own independent /Contents stream. This is
+                    # the safe alternative to ``copy.copy(template_page)``
+                    # which previously caused stroke bleed and missing
+                    # backgrounds across multi-page notebooks.
+                    bg_page = PdfReader(str(template_pdf)).pages[0]
                     bg_page.merge_page(content_page)
                     writer.add_page(bg_page)
                 except Exception as e:  # noqa: BLE001
@@ -450,8 +537,15 @@ def copy_existing_pdf(pdf_file: Path, output_file: Path) -> bool:
     return v6_converter.copy_existing_pdf(pdf_file, output_file)
 
 
+_default_page_resolver = PageResolver()
+
+
 def get_page_templates(content_file: Path) -> Dict[str, str]:
     """Extract template names for each page from .content file.
+
+    Backward-compatible thin shim around :class:`PageResolver`. Prefer
+    using ``PageResolver().resolve(content_file)`` directly in new code
+    so misses and parse errors can be reported structurally.
 
     Args:
         content_file: Path to the .content JSON file
@@ -459,103 +553,42 @@ def get_page_templates(content_file: Path) -> Dict[str, str]:
     Returns:
         Dictionary mapping page IDs to template names
     """
-    page_templates = {}
-
     if not content_file or not content_file.exists():
-        return page_templates
-
-    try:
-        with open(content_file, "r", encoding="utf-8") as f:
-            content_data = json.load(f)
-
-        # Extract pages from cPages structure
-        c_pages = content_data.get("cPages", {})
-        pages = c_pages.get("pages", [])
-
-        for page in pages:
-            page_id = page.get("id")
-            template_info = page.get("template", {})
-            template_name = template_info.get("value", "Blank")
-
-            if page_id:
-                page_templates[page_id] = template_name
-
-    except Exception as e:
-        logging.debug(f"Failed to extract page templates from {content_file}: {e}")
-
-    return page_templates
+        return {}
+    report = _default_page_resolver.resolve(content_file)
+    return {page.page_id: page.template_name for page in report.pages}
 
 
 def get_ordered_pages(content_file: Path) -> List[Dict]:
     """Get the list of all pages in the notebook in the correct order.
+
+    Backward-compatible thin shim around :class:`PageResolver`. Prefer
+    using ``PageResolver().resolve(content_file)`` directly in new code
+    so misses and parse errors can be reported structurally.
 
     Args:
         content_file: Path to the .content file
 
     Returns:
         List of dictionaries with:
-        - 'path': Path to the .rm file
+        - 'path': Path to the .rm file (may not exist if file missing)
         - 'id': Page ID
         - 'version': Format version (5, 6, etc.)
     """
-    ordered_pages = []
     if not content_file or not content_file.exists():
         return []
-
-    try:
-        with open(content_file, "r", encoding="utf-8") as f:
-            content_data = json.load(f)
-
-        # Handle both old 'pages' and new 'cPages' structure
-        page_list = content_data.get("pages", [])
-        if not page_list:
-            c_pages = content_data.get("cPages", {})
-            page_list = c_pages.get("pages", [])
-        
-        logging.debug(f"Found {len(page_list)} pages in metadata")
-
-        files_dir = content_file.parent / content_file.stem
-        
-        for page in page_list:
-            # page can be a string (UUID) or a dict with 'id'
-            page_id = page if isinstance(page, str) else page.get("id")
-            if not page_id:
-                continue
-
-            # Look for .rm file in the notebook directory
-            rm_file = files_dir / f"{page_id}.rm"
-            if not rm_file.exists():
-                # Fallback 1: check the parent directory
-                rm_file = content_file.parent / f"{page_id}.rm"
-            
-            if not rm_file.exists():
-                # Fallback 2: search recursively in the notebook directory
-                matches = list(content_file.parent.glob(f"**/{page_id}.rm"))
-                if matches:
-                    rm_file = matches[0]
-
-            version = 6
-            if rm_file.exists():
-                try:
-                    with open(rm_file, "rb") as f:
-                        header = f.read(50).decode("ascii", errors="ignore")
-                        if "version=6" in header:
-                            version = 6
-                        elif "version=5" in header:
-                            version = 5
-                        elif "version=4" in header:
-                            version = 4
-                        else:
-                            version = 6 # Default to 6
-                except Exception:
-                    version = 6
-
-            ordered_pages.append({"path": rm_file, "id": page_id, "version": version})
-
-    except Exception as e:
-        logging.warning(f"Failed to resolve page order: {e}")
-
-    return ordered_pages
+    report = _default_page_resolver.resolve(content_file)
+    files_dir = content_file.parent / content_file.stem
+    return [
+        {
+            "path": page.rm_file
+            if page.rm_file is not None
+            else files_dir / f"{page.page_id}.rm",
+            "id": page.page_id,
+            "version": page.version,
+        }
+        for page in report.pages
+    ]
 
 
 def convert_notebook(
@@ -563,11 +596,23 @@ def convert_notebook(
     output_dir: Path,
     backup_dir: Path,
     template_renderer: Optional[TemplateRenderer] = None,
+    strict: bool = False,
 ) -> Dict:
     """Convert a notebook using appropriate tools for each file type.
 
     Creates a single PDF per notebook with all pages merged together.
     Organizes output in folder hierarchy matching backup structure.
+
+    Args:
+        notebook: Notebook descriptor dict produced by ``find_notebooks``.
+        output_dir: Root directory for converted PDFs.
+        backup_dir: Backup root (used for hierarchy resolution).
+        template_renderer: Optional :class:`TemplateRenderer` instance.
+        strict: When True, raise :class:`PageResolutionError` if any page
+            declared in the notebook's ``.content`` manifest cannot be
+            located on disk. When False, the missing pages are reported
+            via the ``missing_pages`` field of the returned results dict
+            and a placeholder is emitted for each.
     """
     # Create safe filename
     safe_name = "".join(c for c in notebook["name"] if c.isalnum() or c in (" ", "-", "_")).rstrip()
@@ -595,44 +640,73 @@ def convert_notebook(
         "v3_detected": len(notebook.get("v3_files", [])),
         "total_files": 0,
         "output_files": [],
+        # New: structural anomaly reporting (non-empty values surface to the
+        # CLI summary so silent page-skipping can no longer pass unnoticed).
+        "missing_pages": [],          # list of page UUIDs with no .rm file
+        "expected_page_count": 0,     # from .content manifest
+        "resolved_page_count": 0,     # what we actually found
     }
 
     # Collect all PDF pages to merge
-    temp_pdfs = []
+    temp_pdfs: List[Path] = []
 
     # Create temporary directories in OS standard temp location
     temp_dir = Path(tempfile.mkdtemp(prefix="remarkable_pages_"))
-    template_temp_dir = None
+    template_temp_dir: Optional[Path] = None
     if template_renderer:
         template_temp_dir = Path(tempfile.mkdtemp(prefix="remarkable_templates_"))
 
     try:
-        # Resolve all pages in the correct order
+        # Resolve all pages in the correct order via the dedicated resolver.
         content_path = notebook.get("content_file")
         if not content_path:
             metadata_file = notebook.get("metadata_file")
             content_path = metadata_file.with_suffix(".content") if metadata_file else None
-        
-        # Extract page templates from content file
-        page_templates = {}
-        if template_renderer and content_path and content_path.exists():
-            page_templates = get_page_templates(content_path)
-        
-        # Get ordered list of pages
-        all_ordered_pages = []
-        if content_path and content_path.exists():
-            all_ordered_pages = get_ordered_pages(content_path)
 
-        if not all_ordered_pages:
+        report: ResolutionReport = (
+            _default_page_resolver.resolve(content_path)
+            if content_path
+            else ResolutionReport()
+        )
+        results["expected_page_count"] = report.expected_page_count
+        results["resolved_page_count"] = len(report.pages)
+        results["missing_pages"] = list(report.missing_page_ids)
+
+        # Surface misses as structured warnings before we emit placeholders.
+        for missing_id in report.missing_page_ids:
+            logging.warning(
+                "Notebook %r: missing .rm file for page %s",
+                notebook["name"],
+                missing_id,
+            )
+
+        # Strict mode: fail loudly instead of emitting placeholder pages.
+        if strict and (report.has_misses or report.parse_errors):
+            raise PageResolutionError(
+                notebook_name=notebook["name"],
+                missing_pages=report.missing_page_ids,
+                parse_errors=report.parse_errors,
+            )
+
+        if not report.pages:
             logging.warning(f"No pages found for notebook: {notebook['name']}")
             return results
-    # Convert each page in order
-        for i, page in enumerate(all_ordered_pages):
-            rm_file = page["path"]
-            page_id = page["id"]
-            version = page["version"]
-            
-            logging.debug(f"Processing page {i+1}: ID={page_id}, Version={version}, File={rm_file.name}")
+
+        # Convert each page in order
+        for page in report.pages:
+            i = page.index
+            rm_file = page.rm_file
+            page_id = page.page_id
+            version = page.version
+            template_name = page.template_name if template_renderer else "Blank"
+
+            logging.debug(
+                "Processing page %d: ID=%s, Version=%s, File=%s",
+                i + 1,
+                page_id,
+                version,
+                rm_file.name if rm_file else "<missing>",
+            )
 
             # Determine conversion function based on version
             conv_func = None
@@ -652,18 +726,15 @@ def convert_notebook(
 
             temp_pdf_content = temp_dir / f"page_{i+1:03d}_content.pdf"
             conversion_success = False
-            
-            # 1. Fast path: check if file exists
-            rm_file_exists = rm_file and rm_file.exists()
-            
-            # 2. Get template name early
-            template_name = "Blank"
-            if template_renderer:
-                template_name = page_templates.get(page_id, "Blank")
+            rm_file_exists = rm_file is not None and rm_file.exists()
 
-            # 3. If file is missing and template is blank, just create one blank page and skip the rest
+            # If the file is missing and the page has no template, emit a
+            # single empty placeholder page rather than running the renderer.
             if not rm_file_exists and (template_name == "Blank" or not template_name):
-                c = canvas.Canvas(str(temp_pdf_content), pagesize=(REMARKABLE_WIDTH_POINTS, REMARKABLE_HEIGHT_POINTS))
+                c = canvas.Canvas(
+                    str(temp_pdf_content),
+                    pagesize=(REMARKABLE_WIDTH_POINTS, REMARKABLE_HEIGHT_POINTS),
+                )
                 c.setFont("Helvetica", 10)
                 c.setStrokeColorRGB(0.8, 0.8, 0.8)
                 c.drawString(50, 50, f"[Page {i+1} - Empty]")
@@ -671,44 +742,57 @@ def convert_notebook(
                 temp_pdfs.append(temp_pdf_content)
                 continue
 
-            # 4. Otherwise, proceed with normal logic but avoid unnecessary calls
             if rm_file_exists:
                 conversion_success = conv_func(rm_file, temp_pdf_content)
-            
+
             if not conversion_success:
                 # Create placeholder for failed/missing content
-                c = canvas.Canvas(str(temp_pdf_content), pagesize=(REMARKABLE_WIDTH_POINTS, REMARKABLE_HEIGHT_POINTS))
+                c = canvas.Canvas(
+                    str(temp_pdf_content),
+                    pagesize=(REMARKABLE_WIDTH_POINTS, REMARKABLE_HEIGHT_POINTS),
+                )
                 c.setFont("Helvetica", 10)
                 if not rm_file_exists:
                     c.drawString(50, 50, f"[Page {i+1} - Drawing data missing]")
                 else:
-                    logging.error(f"Conversion function failed for page {i+1} ({rm_file.name})")
+                    logging.error(
+                        f"Conversion function failed for page {i+1} ({rm_file.name})"
+                    )
                     c.drawString(50, 50, f"[Page {i+1} - Conversion failed]")
                 c.save()
 
-            # 5. Apply template if needed
+            # Apply template if needed
             if template_renderer and template_temp_dir:
                 if template_name and template_name != "Blank":
                     temp_template_pdf = template_temp_dir / f"template_{i+1:03d}.pdf"
                     temp_pdf_final = temp_dir / f"page_{i+1:03d}.pdf"
 
-                    if template_renderer.render_template_to_pdf(template_name, temp_template_pdf):
-                        if merge_pdf_with_template(temp_pdf_content, temp_template_pdf, temp_pdf_final):
+                    if template_renderer.render_template_to_pdf(
+                        template_name, temp_template_pdf
+                    ):
+                        if merge_pdf_with_template(
+                            temp_pdf_content, temp_template_pdf, temp_pdf_final
+                        ):
                             temp_pdfs.append(temp_pdf_final)
-                            if conversion_success: results[res_key] += 1
+                            if conversion_success:
+                                results[res_key] += 1
                         else:
                             temp_pdfs.append(temp_pdf_content)
-                            if conversion_success: results[res_key] += 1
+                            if conversion_success:
+                                results[res_key] += 1
                     else:
                         temp_pdfs.append(temp_pdf_content)
-                        if conversion_success: results[res_key] += 1
+                        if conversion_success:
+                            results[res_key] += 1
                 else:
                     # Template is blank, just use the content PDF as is
                     temp_pdfs.append(temp_pdf_content)
-                    if conversion_success: results[res_key] += 1
+                    if conversion_success:
+                        results[res_key] += 1
             else:
                 temp_pdfs.append(temp_pdf_content)
-                if conversion_success: results[res_key] += 1
+                if conversion_success:
+                    results[res_key] += 1
 
         # Convert v4 files (best-effort; may not succeed)
         for i, rm_file in enumerate(notebook.get("v4_files", [])):
@@ -728,6 +812,7 @@ def convert_notebook(
         if temp_pdfs:
             final_pdf = output_notebook_dir / f"{safe_name}.pdf"
             if merge_pdfs(temp_pdfs, final_pdf):
+                _stamp_pdf_metadata(final_pdf, notebook)
                 results["output_files"].append(final_pdf)
                 logging.info(
                     f"✓ {notebook['name']}: Merged {len(temp_pdfs)} pages into {final_pdf.name}"

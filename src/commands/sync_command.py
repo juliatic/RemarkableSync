@@ -19,6 +19,7 @@ def run_sync_command(
     output_dir: Optional[Path] = None,
     templates_dir: Optional[Path] = None,
     no_templates: bool = False,
+    strict: bool = False,
 ) -> int:
     """Execute the sync command (backup + convert).
 
@@ -71,6 +72,7 @@ def run_sync_command(
             backup_templates=not skip_templates,
             templates_dir=templates_dir,
             no_templates=no_templates,
+            strict=strict,
         )
 
         if success:

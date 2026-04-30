@@ -17,6 +17,7 @@ def run_convert_command(
     notebook: Optional[str],
     templates_dir: Optional[Path] = None,
     no_templates: bool = False,
+    strict: bool = False,
 ) -> int:
     """Execute the convert command.
 
@@ -33,6 +34,8 @@ def run_convert_command(
             exists.
         no_templates: When ``True`` skip template embedding entirely and emit
             content-only PDFs.
+        strict: When ``True`` abort a notebook if any page declared in its
+            manifest cannot be located on disk.
 
     Returns:
         Exit code (``0`` for success, non-zero for failure).
@@ -82,6 +85,7 @@ def run_convert_command(
             updated_only=updated_only_file,
             templates_dir=templates_dir,
             no_templates=no_templates,
+            strict=strict,
         )
 
         return 0 if success else 1

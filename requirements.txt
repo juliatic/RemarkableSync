@@ -18,3 +18,14 @@ svglib>=1.5.0
 
 # reMarkable .rm v6 → PDF (in-process Python API)
 rmc>=0.3.0
+
+# --- Optional: OCR backends (lazy-imported by `RemarkableSync ocr`) ---
+# macOS: Apple Vision (recommended for handwriting; no model download).
+# Install only on macOS; pip will skip on other platforms.
+pyobjc-framework-Vision>=10.0; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
+
+# Cross-platform: Tesseract via pytesseract (also requires the `tesseract`
+# binary on PATH and the `poppler` binary used by pdf2image).
+pytesseract>=0.3.10
+pdf2image>=1.17.0

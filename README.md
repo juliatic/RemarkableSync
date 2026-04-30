@@ -11,7 +11,7 @@
 [![Homebrew](https://github.com/JeffSteinbok/RemarkableSync/actions/workflows/update-homebrew.yml/badge.svg)](https://github.com/JeffSteinbok/RemarkableSync/actions/workflows/update-homebrew.yml)
 
 
-A comprehensive Python toolkit for backing up and converting reMarkable tablet notebooks to PDF with template support and proper folder hierarchy preservation.
+A comprehensive Python toolkit for backing up and converting reMarkable tablet notebooks to PDF, with template support, on-device folder hierarchy preservation, local OCR, and a Google NotebookLM bundling step.
 
 > [!IMPORTANT]
 > This tool has been tested exclusively on reMarkable 2. Compatibility with reMarkable 1 is not guaranteed.
@@ -24,12 +24,24 @@ A comprehensive Python toolkit for backing up and converting reMarkable tablet n
 - **Incremental Sync**: Only downloads files that have changed since last backup
 - **Complete Backup**: Backs up all notebooks, documents, and metadata
 - **Template Support**: Automatically backs up template files from the device
-- **File Integrity**: MD5 hash verification for synced files
+- **File Integrity**: MD5 hash verification for synced files, plus a
+  post-download size guard that detects truncated SCP transfers and forces
+  a retry on the next run instead of marking the partial file as "synced"
 
 ### 📄 PDF Conversion
 - **Hybrid Converter**: Supports both v5 and v6 .rm file formats
 - **Vector-first Engine**: Renders v6 notebooks straight to PDF through the
   in-process `rmc` Python API — no subprocess round-trip, no SVG rasterisation
+- **Reliable Template Compositing**: Per-page background re-read eliminates the
+  shallow-copy bug that previously caused missing backgrounds and stroke bleed
+  on multi-page notebooks
+- **Structured Page Resolver**: Pages declared in `.content` are validated
+  against `.rm` files on disk; missing pages are reported (not silently
+  swallowed) and surfaced in the end-of-run summary
+- **Strict Mode**: `--strict` aborts a notebook when its manifest references
+  pages that are not present on disk, instead of emitting placeholders
+- **Embedded PDF Metadata**: Each output PDF carries the notebook title,
+  creation date, and last-modified date pulled from the device `.metadata`
 - **Template Rendering**: Optionally embeds original notebook templates
   (grids, lines, dots, custom PNG/SVG backgrounds) with accurate 226 DPI → 72 pt scaling
 - **Parametric Output**: Point `--output/-o` anywhere; defaults to `<backup>/PDF`
@@ -42,6 +54,24 @@ A comprehensive Python toolkit for backing up and converting reMarkable tablet n
 - **Smart Conversion**: Only converts notebooks updated in the last backup
 - **Progress Tracking**: Visual progress bars and detailed logging
 
+### 🔠 Local OCR (`ocr` command)
+- **Pluggable Backends**: Apple Vision on macOS (default; uses the same engine
+  that powers system-wide handwriting recognition) and Tesseract elsewhere
+- **No Cloud Calls**: OCR runs entirely on your machine
+- **Multiple Outputs**: Produces a separate `<name>_text.pdf` (text-only PDF
+  with one page per source page), and optional `.txt` and `.md` sidecars
+- **Notebook Filter & Engine Override**: `--notebook` to scope a single
+  document, `--engine vision|tesseract` to force a backend
+
+### 🧠 Google NotebookLM Bundling (`notebooklm-bundle` command)
+- **Best-Variant Selection**: Prefers the OCR text PDF when present, falls
+  back to the graphical PDF; flip with `--no-prefer-ocr`
+- **Size Guard**: `--max-mb` skips files above NotebookLM's per-source limit
+  (default 200 MB)
+- **Manifest Index**: Writes a `manifest.md` listing every bundled document
+  with its type, size, and original path — ready to drag-and-drop into a
+  NotebookLM project
+
 ## Prerequisites
 
 1. **reMarkable Tablet Setup**:
@@ -53,6 +83,15 @@ A comprehensive Python toolkit for backing up and converting reMarkable tablet n
    - Python 3.11 or higher (required)
    - Required packages (install with `pip install -r requirements.txt`)
    - All dependencies including `rmc` are installed automatically
+
+3. **Optional — for the `ocr` command**:
+   - **macOS** (recommended): the Apple Vision backend ships with the OS;
+     `pip install -r requirements.txt` will pull in
+     `pyobjc-framework-Vision` and `pyobjc-framework-Quartz` automatically.
+   - **Linux/Windows or override**: install the `tesseract` binary
+     (e.g. `brew install tesseract poppler` on macOS,
+     `apt install tesseract-ocr poppler-utils` on Debian/Ubuntu) — the Python
+     wrappers (`pytesseract`, `pdf2image`) are already in `requirements.txt`.
 
 ## Installation
 
@@ -168,7 +207,15 @@ That's it! The tool will only sync changed files and convert updated notebooks o
 
 ### Unified Command Line Interface
 
-RemarkableSync provides a single entry point with three main commands:
+RemarkableSync provides a single entry point with five commands:
+
+| Command | Purpose |
+| ------- | ------- |
+| `sync` *(default)* | Backup the tablet, then convert updated notebooks to PDF |
+| `backup` | Backup only — no conversion |
+| `convert` | Convert an existing backup to PDF |
+| `ocr` | Run local OCR on converted PDFs (Apple Vision or Tesseract) |
+| `notebooklm-bundle` | Package PDFs (preferring OCR text PDFs) for upload to Google NotebookLM |
 
 #### Default Command: Sync (Backup + Convert)
 
@@ -267,6 +314,59 @@ RemarkableSync convert --no-templates
 RemarkableSync convert --templates-dir ~/my-rm-templates
 ```
 
+**Fail loud on missing pages** (CI / archival workflows):
+```bash
+# Aborts a notebook (exits with an error logged) if its .content manifest
+# references .rm files that aren't on disk, instead of writing a placeholder
+# "[Page X - Drawing data missing]" page.
+RemarkableSync convert --strict
+```
+
+#### OCR (handwriting → searchable text)
+
+Once a backup has been converted to PDF, run OCR over the result:
+
+```bash
+# Default: Apple Vision on macOS, Tesseract elsewhere; emits <name>_text.pdf per notebook.
+RemarkableSync ocr
+
+# Multiple output formats at once.
+RemarkableSync ocr --format pdf --format md --format txt
+
+# Force a specific engine.
+RemarkableSync ocr --engine tesseract
+
+# Limit to one document.
+RemarkableSync ocr --notebook "Meeting Notes"
+```
+
+OCR runs entirely on your machine (no cloud calls). The `_text.pdf` is a
+text-only document with one page per source page; combine with the original
+PDF in your reader of choice, or feed it to NotebookLM (next section).
+
+#### Bundle for Google NotebookLM
+
+Package converted notebooks into an upload-ready folder:
+
+```bash
+# Prefers <name>_text.pdf when present, falls back to <name>.pdf.
+RemarkableSync notebooklm-bundle -o ~/notebooklm/my-project
+
+# Bundle a single notebook (substring match).
+RemarkableSync notebooklm-bundle -o ~/notebooklm/standup --notebook "Standup"
+
+# Use the original graphical PDFs instead of the OCR text PDFs.
+RemarkableSync notebooklm-bundle -o ~/out --no-prefer-ocr
+
+# Tighten the per-source size cap (NotebookLM enforces ~200 MB by default).
+RemarkableSync notebooklm-bundle -o ~/out --max-mb 100
+```
+
+The output directory contains one PDF per notebook plus a `manifest.md`
+index. Drag the folder into a new NotebookLM project to upload as sources;
+NotebookLM does not currently expose a public ingestion API, so this step
+is manual.
+
 ### Command Line Options
 
 **Common Options** (all commands):
@@ -285,9 +385,24 @@ RemarkableSync convert --templates-dir ~/my-rm-templates
 - `--templates-dir PATH`: Use a custom directory of template assets
   (defaults to `<backup-dir>/Templates` when present)
 - `--no-templates`: Disable template embedding and emit content-only PDFs
+- `--strict`: Fail (do not emit placeholders) when a notebook page is missing on disk
 - `-f, --force` / `--force-convert`: Convert all notebooks (ignore sync status)
 - `-s, --sample N`: Convert only first N notebooks *(convert only)*
 - `-n, --notebook NAME`: Convert only specific notebook by UUID or name *(convert only)*
+
+**OCR Options** (`ocr` command):
+- `-d, --pdf-dir PATH`: Directory of converted PDFs (default: `./remarkable_backup/PDF`)
+- `-o, --output PATH`: Where to write OCR artefacts (default: same as `--pdf-dir`)
+- `--engine [vision|tesseract]`: Force a specific OCR backend
+- `-f, --format [pdf|txt|md|all]`: Output format(s); may be repeated; default `pdf`
+- `-n, --notebook NAME`: OCR only PDFs whose name contains this string
+
+**NotebookLM Bundle Options** (`notebooklm-bundle` command):
+- `-d, --pdf-dir PATH`: Directory containing PDFs (and optional `_text.pdf` OCR variants)
+- `-o, --output PATH`: Destination directory for the bundle (**required**)
+- `-n, --notebook NAME`: Bundle only documents whose name contains this string
+- `--max-mb N`: Skip files larger than N MB (default: 200)
+- `--no-prefer-ocr`: Bundle the original graphical PDFs instead of the OCR text PDFs
 
 ## How It Works
 
@@ -295,16 +410,31 @@ RemarkableSync convert --templates-dir ~/my-rm-templates
 2. **File Discovery**: Scans `/home/root/.local/share/remarkable/xochitl/` for notebook files
 3. **Template Backup**: Downloads template files from `/usr/share/remarkable/templates/`
 4. **Incremental Sync**: Compares file metadata (size, modification time, hash) to determine what needs updating
-5. **Download**: Uses SCP to efficiently transfer only changed files
-6. **PDF Conversion**:
+5. **Download + Integrity Check**: Uses SCP to transfer only changed files; each
+   downloaded file is size-verified against the remote-reported size and rejected
+   on mismatch so truncated transfers cannot be marked as up-to-date
+6. **Page Resolution**: Parses each notebook's `.content` manifest into an
+   ordered list of pages, locates the matching `.rm` files via a documented
+   fallback chain, detects the format version per file, and reports any
+   misses to the user
+7. **PDF Conversion**:
    - Renders v6 `.rm` files directly to PDF via the in-process `rmc` Python API
      (falls back to the `rmc` CLI + SVG pipeline when the API is unavailable)
    - Optionally embeds template backgrounds (grids, lines, dots, or custom PNG/SVG assets)
      using accurate 226 DPI → 72 pt scaling
-   - Merges templates with notebook content page-by-page (template loaded once,
-     cloned per page for O(1) amortised cost)
-   - Combines all pages into a single compressed PDF per notebook
-7. **Smart Updates**: Tracks which notebooks changed and only converts those
+   - Composites templates with notebook content page-by-page (template re-read
+     per page to guarantee no cross-page bleed)
+   - Combines all pages into a single compressed PDF per notebook and stamps
+     it with notebook title, creation date, last-modified date, and a
+     `RemarkableSync` producer marker
+8. **Smart Updates**: Tracks which notebooks changed and only converts those
+9. **Optional OCR Pass**: `RemarkableSync ocr` rasterises each PDF page and
+   submits it to a local OCR engine (Apple Vision on macOS, Tesseract
+   elsewhere), producing `<name>_text.pdf` (one text page per source page)
+   and optional `.txt` / `.md` sidecars
+10. **Optional NotebookLM Bundle**: `RemarkableSync notebooklm-bundle` copies
+    the best PDF variant per notebook into a flat upload folder with a
+    `manifest.md` index
 
 ## File Structure
 
@@ -323,10 +453,22 @@ remarkable_backup/
 │   ├── *.template            # Template definition files
 │   └── templates.json        # Template metadata
 ├── PDF/                      # Generated PDF outputs
-│   └── [notebook folders with PDFs preserving hierarchy]
+│   ├── [notebook folders with PDFs preserving hierarchy]
+│   ├── *_text.pdf            # (Optional) Text-only PDF from `ocr` command
+│   ├── *.txt                 # (Optional) Plain-text OCR sidecar
+│   └── *.md                  # (Optional) Markdown OCR sidecar
 ├── sync_metadata.json        # Sync state tracking
 ├── updated_notebooks.txt     # List of notebooks updated in last backup
 └── .remarkable_backup.log    # Backup operation log
+```
+
+`RemarkableSync notebooklm-bundle -o <dir>` writes its output to a separate
+user-chosen directory (not under `remarkable_backup/`) containing:
+
+```
+<bundle-dir>/
+├── *.pdf                     # One PDF per notebook (OCR variant preferred)
+└── manifest.md               # Index with type, size and original path per file
 ```
 
 ## PDF Conversion Technical Details
@@ -341,9 +483,19 @@ RemarkableSync includes a hybrid converter that supports both v5 and v6 .rm file
   with accurate scaling (226 DPI → 72 DPI PDF points); toggle with
   `--no-templates` or override with `--templates-dir`.
 - **Page Merging**: Uses PyPDF2 to composite template backgrounds with
-  notebook content. Templates are loaded once per notebook and cloned per
-  page; final PDFs are written with content-stream compression for smaller
-  file sizes.
+  notebook content. The template page is re-read from disk on every
+  iteration to avoid PyPDF2's shared `/Contents` reference issue (which
+  previously caused backgrounds to render only on the first page and
+  strokes from one page to bleed onto the next). Final PDFs are written
+  with content-stream compression for smaller file sizes.
+- **Page Resolution & Strict Mode**: A dedicated `PageResolver` parses the
+  notebook `.content` manifest, resolves each page id to a `.rm` file via a
+  small fallback chain, and detects format version per file. Missing pages
+  produce a warning and a placeholder page in the output by default; pass
+  `--strict` to instead fail the notebook entirely.
+- **Embedded Metadata**: Every output PDF carries `/Title` (notebook name),
+  `/Producer = RemarkableSync`, plus `/CreationDate` and `/ModDate` derived
+  from the device `.metadata` file (in PDF date format `D:YYYYMMDDHHmmSSZ`).
 
 ### rmc Python Package
 
@@ -382,11 +534,16 @@ Files are only downloaded if:
 - Restart ReMarkable tablet if SSH becomes unresponsive
 - Check available disk space on both devices
 
-## Security Notes
+## Security & Privacy Notes
 
 - SSH password is requested interactively (not stored)
 - Uses paramiko with auto-add host key policy
 - Files are transferred over local USB network (not internet)
+- **OCR is fully local**: Apple Vision runs on-device on macOS, Tesseract
+  runs on-device on every platform. No notebook content is sent to any
+  cloud service by RemarkableSync.
+- **NotebookLM upload is manual**: the `notebooklm-bundle` command only
+  prepares files locally; you choose whether and when to upload them.
 
 ## License
 

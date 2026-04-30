@@ -121,13 +121,16 @@ Examples:
 ```
 RemarkableSync/
 ├── src/
-│   ├── backup/         # SSH connection and backup logic
-│   ├── commands/       # CLI command implementations
-│   ├── converters/     # PDF conversion (v4, v5, v6 formats)
-│   └── utils/          # Utility functions
-├── tests/              # Test files
+│   ├── backup/         # SSH connection, backup logic, integrity verification
+│   ├── commands/       # CLI command implementations (sync, backup, convert, ocr, notebooklm-bundle)
+│   ├── converters/     # Per-format .rm renderers (v4, v5, v6)
+│   ├── ocr/            # OCR backends (Apple Vision, Tesseract) and writers
+│   ├── page_resolver.py# Manifest → on-disk .rm file resolution + version detection
+│   ├── hybrid_converter.py # Orchestrates per-notebook PDF assembly + metadata stamping
+│   └── utils/          # Logging and helpers
+├── tests/              # Test files (pytest + unittest)
 ├── release/            # Release and distribution documentation
-└── RemarkableSync.py   # Main entry point
+└── RemarkableSync.py   # Click CLI entry point
 ```
 
 ## Building Executables

@@ -95,12 +95,14 @@ def backup(ctx, backup_dir: Path, password: Optional[str], verbose: bool,
                    'Defaults to <backup-dir>/Templates when present.')
 @click.option('--no-templates', is_flag=True,
               help='Disable template embedding and produce content-only PDFs.')
+@click.option('--strict', is_flag=True,
+              help='Fail (do not emit placeholders) when a notebook page is missing on disk.')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
 @click.option('--force', '-f', is_flag=True, help='Convert all notebooks (ignore sync status)')
 @click.option('--sample', '-s', type=int, help='Convert only first N notebooks (for testing)')
 @click.option('--notebook', '-n', type=str, help='Convert only this notebook (by UUID or name)')
 def convert(backup_dir: Path, output_dir: Optional[Path], templates_dir: Optional[Path],
-           no_templates: bool, verbose: bool, force: bool,
+           no_templates: bool, strict: bool, verbose: bool, force: bool,
            sample: Optional[int], notebook: Optional[str]):
     """Convert backed up notebooks to PDF format.
 
@@ -117,6 +119,7 @@ def convert(backup_dir: Path, output_dir: Optional[Path], templates_dir: Optiona
         notebook=notebook,
         templates_dir=templates_dir,
         no_templates=no_templates,
+        strict=strict,
     ))
 
 
@@ -131,6 +134,8 @@ def convert(backup_dir: Path, output_dir: Optional[Path], templates_dir: Optiona
               help='Directory with custom template assets to embed as page backgrounds.')
 @click.option('--no-templates', is_flag=True,
               help='Disable template embedding during conversion.')
+@click.option('--strict', is_flag=True,
+              help='Fail (do not emit placeholders) when a notebook page is missing on disk.')
 @click.option('--password', '-p', type=str, help='ReMarkable SSH password')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
 @click.option('--skip-templates', is_flag=True, help='Skip backing up template files')
@@ -139,7 +144,7 @@ def convert(backup_dir: Path, output_dir: Optional[Path], templates_dir: Optiona
 @click.option('--host', '-h', type=str, help='ReMarkable IP address')
 @click.pass_context
 def sync(ctx, backup_dir: Path, output_dir: Optional[Path], templates_dir: Optional[Path],
-        no_templates: bool, password: Optional[str], verbose: bool, skip_templates: bool,
+        no_templates: bool, strict: bool, password: Optional[str], verbose: bool, skip_templates: bool,
         force_backup: bool, force_convert: bool, host: Optional[str]):
     """Backup and convert in one command (default workflow).
 
@@ -160,13 +165,79 @@ def sync(ctx, backup_dir: Path, output_dir: Optional[Path], templates_dir: Optio
         output_dir=output_dir,
         templates_dir=templates_dir,
         no_templates=no_templates,
+        strict=strict,
+    ))
+
+
+@cli.command()
+@click.option('--pdf-dir', '-d', type=click.Path(path_type=Path),
+              default=Path('./remarkable_backup/PDF'),
+              help='Directory containing converted PDFs to OCR')
+@click.option('--output', '-o', 'output_dir', type=click.Path(path_type=Path),
+              help='Destination directory for OCR artefacts (default: same as --pdf-dir).')
+@click.option('--engine', type=click.Choice(['vision', 'tesseract'], case_sensitive=False),
+              help='OCR engine. Defaults to Apple Vision on macOS, Tesseract elsewhere.')
+@click.option('--format', '-f', 'output_formats', type=click.Choice(['pdf', 'txt', 'md', 'all']),
+              multiple=True, default=('pdf',),
+              help='Output format(s). May be specified multiple times. Default: pdf')
+@click.option('--notebook', '-n', type=str, help='OCR only PDFs whose name contains this string')
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
+def ocr(pdf_dir: Path, output_dir: Optional[Path], engine: Optional[str],
+        output_formats: tuple, notebook: Optional[str], verbose: bool):
+    """Run handwriting/text OCR on converted PDFs.
+
+    Produces a separate text-only PDF (``<name>_text.pdf``) for each
+    input PDF, plus optional .txt/.md sidecar files. OCR runs locally
+    via Apple Vision (macOS) or Tesseract.
+    """
+    from src.commands.ocr_command import run_ocr_command
+    sys.exit(run_ocr_command(
+        pdf_dir=pdf_dir,
+        output_dir=output_dir,
+        engine=engine,
+        output_formats=list(output_formats),
+        verbose=verbose,
+        notebook=notebook,
+    ))
+
+
+@cli.command(name='notebooklm-bundle')
+@click.option('--pdf-dir', '-d', type=click.Path(path_type=Path),
+              default=Path('./remarkable_backup/PDF'),
+              help='Directory containing PDFs (and optional _text.pdf OCR variants)')
+@click.option('--output', '-o', 'output_dir', type=click.Path(path_type=Path),
+              required=True,
+              help='Destination directory for the bundle')
+@click.option('--notebook', '-n', type=str,
+              help='Bundle only documents whose name contains this string')
+@click.option('--max-mb', type=int, default=200,
+              help='Skip files larger than this size in MB (default: 200)')
+@click.option('--no-prefer-ocr', is_flag=True,
+              help='Bundle the original graphical PDFs instead of the OCR text PDFs')
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose logging')
+def notebooklm_bundle(pdf_dir: Path, output_dir: Path, notebook: Optional[str],
+                       max_mb: int, no_prefer_ocr: bool, verbose: bool):
+    """Package converted notebooks for upload to Google NotebookLM.
+
+    Copies the best PDF variant per notebook (preferring the OCR text
+    PDF when available) into a flat folder with a manifest.md index.
+    Upload the resulting folder manually via the NotebookLM web UI.
+    """
+    from src.commands.notebooklm_command import run_notebooklm_bundle_command
+    sys.exit(run_notebooklm_bundle_command(
+        pdf_dir=pdf_dir,
+        output_dir=output_dir,
+        notebook=notebook,
+        max_mb=max_mb,
+        verbose=verbose,
+        prefer_ocr=not no_prefer_ocr,
     ))
 
 
 def main():
     """Entry point for the application."""
     # If no command specified, default to 'sync'
-    commands = ['backup', 'convert', 'sync']
+    commands = ['backup', 'convert', 'sync', 'ocr', 'notebooklm-bundle']
     
     # If the user didn't specify a command and isn't asking for help/version
     if not any(cmd in sys.argv for cmd in commands) and \

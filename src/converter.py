@@ -32,6 +32,7 @@ def run_conversion(
     updated_only: Optional[Path] = None,
     templates_dir: Optional[Path] = None,
     no_templates: bool = False,
+    strict: bool = False,
 ) -> bool:
     """Run PDF conversion on backed up notebooks.
 
@@ -45,6 +46,10 @@ def run_conversion(
         templates_dir: Optional override for the directory holding template
             assets. Defaults to ``<backup_dir>/Templates`` when present.
         no_templates: When True, skip template embedding entirely.
+        strict: When True, abort a notebook (and count it as failed) if any
+            page in its ``.content`` manifest cannot be located. When False
+            (default), missing pages produce placeholders and a structured
+            warning is logged; a per-run summary is printed at the end.
 
     Returns:
         bool: True if conversion successful, False otherwise.
@@ -127,6 +132,7 @@ def run_conversion(
 
     # Convert notebooks with progress bar
     successful = 0
+    notebooks_with_misses: list = []  # (name, missing_count) for end-of-run summary
     logging.info(f"Converting {len(notebooks)} notebooks...")
 
     with tqdm(notebooks, desc="Converting", unit="notebook") as pbar:
@@ -135,11 +141,30 @@ def run_conversion(
             pbar.set_postfix_str(notebook["name"][:40])
 
             try:
-                results = convert_notebook(notebook, output_dir, backup_dir, template_renderer)
+                results = convert_notebook(
+                    notebook,
+                    output_dir,
+                    backup_dir,
+                    template_renderer,
+                    strict=strict,
+                )
                 if results["output_files"]:
                     successful += 1
+                if results.get("missing_pages"):
+                    notebooks_with_misses.append(
+                        (notebook["name"], len(results["missing_pages"]))
+                    )
             except Exception as e:
                 logging.error(f"Failed to convert {notebook['name']}: {e}")
 
     logging.info(f"Conversion complete: {successful}/{len(notebooks)} notebooks converted")
+    if notebooks_with_misses:
+        total_missing = sum(count for _, count in notebooks_with_misses)
+        logging.warning(
+            "%d notebook(s) had unresolved pages (%d total). Re-run with --strict to fail on these.",
+            len(notebooks_with_misses),
+            total_missing,
+        )
+        for name, count in notebooks_with_misses:
+            logging.warning("  - %s: %d missing page(s)", name, count)
     return successful > 0

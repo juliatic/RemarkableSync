@@ -178,10 +178,39 @@ pip install --upgrade remarkablesync
    source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
    ```
 
+   > [!IMPORTANT]
+   > **macOS + external drives:** If the repository lives on an external volume (e.g. `/Volumes/…`), macOS Gatekeeper will block native libraries (such as `cryptography`'s Rust extension) regardless of ad-hoc re-signing. Create the virtual environment on your **local drive** instead:
+   > ```bash
+   > python3 -m venv ~/venvs/remarkablesync
+   > source ~/venvs/remarkablesync/bin/activate
+   > pip install -e /Volumes/<your-drive>/RemarkableSync
+   > ```
+
 3. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
+
+### Option 5: Interactive Wizard (`start.sh`)
+
+If you have cloned the repository and want a guided experience without memorising flags, use the bundled wizard:
+
+```bash
+./start.sh
+```
+
+The wizard will:
+- Create and activate a virtual environment on your **local drive** (`~/venvs/remarkablesync`) — safe on macOS external volumes
+- Install / update the package automatically via `pip install -e .`
+- Ask step-by-step questions:
+  - **Connection**: USB (default `10.11.99.1`) or WiFi (custom IP)
+  - **Command**: `sync`, `backup`, `convert`, or `ocr`
+  - **Backup scope**: incremental (changed only) or force full backup
+  - **Conversion scope**: changed only, force all, single notebook, or sample N
+  - **Templates**: embed device templates, use a custom directory, or skip entirely
+  - **OCR engine**: Apple Vision or Tesseract, plus output formats (PDF / TXT / MD)
+  - **Strict mode** and **verbose logging**
+- Print the exact `RemarkableSync` command it will run, and ask for confirmation before executing
 
 ## Quick Start
 
@@ -189,12 +218,15 @@ The simplest way to get started:
 
 1. **Connect your reMarkable tablet** via USB
 2. **Get your SSH password** from Settings → Help → Copyright and licenses on your tablet
-3. **Run RemarkableSync**:
+3. **Run RemarkableSync** — pick whichever method suits you:
    ```bash
+   # Guided interactive wizard (recommended for first-time / from-source users)
+   ./start.sh
+
    # If installed via Homebrew (macOS)
    RemarkableSync
 
-   # If using Python
+   # If using Python directly
    python3 RemarkableSync.py
    ```
 4. Enter your password when prompted (you can save it for future use)

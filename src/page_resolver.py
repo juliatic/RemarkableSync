@@ -136,9 +136,7 @@ class PageResolver:
         report = ResolutionReport()
 
         if not content_file or not content_file.exists():
-            report.parse_errors.append(
-                f".content file not found: {content_file}"
-            )
+            report.parse_errors.append(f".content file not found: {content_file}")
             return report
 
         try:
@@ -166,9 +164,7 @@ class PageResolver:
                 )
                 continue
 
-            template_name = (
-                entry.get("template", {}).get("value") or "Blank"
-            )
+            template_name = entry.get("template", {}).get("value") or "Blank"
             rm_file = self._locate_rm_file(page_id, notebook_dir, sibling_dir)
             version = (
                 detect_rm_version(rm_file, default=self._default_version)
@@ -206,13 +202,14 @@ class PageResolver:
             if isinstance(entry, str):
                 normalised.append({"id": entry})
             elif isinstance(entry, dict):
+                deleted = entry.get("deleted", {})
+                if isinstance(deleted, dict) and deleted.get("value"):
+                    continue
                 normalised.append(entry)
         return normalised
 
     @staticmethod
-    def _locate_rm_file(
-        page_id: str, notebook_dir: Path, sibling_dir: Path
-    ) -> Optional[Path]:
+    def _locate_rm_file(page_id: str, notebook_dir: Path, sibling_dir: Path) -> Optional[Path]:
         """Find the ``.rm`` file for ``page_id`` using ordered fallbacks.
 
         Strategy:

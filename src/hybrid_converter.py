@@ -118,6 +118,10 @@ def find_notebooks(backup_dir: Path) -> List[Dict]:
             notebook_type = metadata.get("type", "unknown")
 
             if notebook_type in ["CollectionType", "DocumentType"]:
+                # A document may be backed up as a sibling {uuid}.pdf file
+                # (imported PDFs / ePubs rendered to PDF by the device) or as
+                # individual page PDFs inside a {uuid}/ subdirectory.
+                sibling_pdf = files_dir / f"{uuid}.pdf"
                 notebook_info: Dict = {
                     "uuid": uuid,
                     "name": metadata.get("visibleName", "Untitled"),
@@ -126,6 +130,7 @@ def find_notebooks(backup_dir: Path) -> List[Dict]:
                     "metadata_file": metadata_file,
                     "rm_files": list(files_dir.glob(f"{uuid}/*.rm")),
                     "pdf_files": list(files_dir.glob(f"{uuid}/*.pdf")),
+                    "sibling_pdf": sibling_pdf if sibling_pdf.exists() else None,
                 }
 
                 # Analyze file versions
@@ -147,7 +152,7 @@ def find_notebooks(backup_dir: Path) -> List[Dict]:
 
                 # Include in conversion list if it's a folder or has convertible content
                 # - CollectionType: Folders (included for directory structure)
-                # - Documents with any version of .rm files or existing PDFs
+                # - Documents with any version of .rm files, page PDFs, or a sibling PDF
                 if (
                     notebook_type == "CollectionType"
                     or notebook_info["v5_files"]
@@ -155,6 +160,7 @@ def find_notebooks(backup_dir: Path) -> List[Dict]:
                     or notebook_info["v4_files"]
                     or notebook_info["v3_files"]
                     or notebook_info["pdf_files"]
+                    or notebook_info["sibling_pdf"]
                 ):
                     notebooks.append(notebook_info)
 
@@ -632,6 +638,23 @@ def convert_notebook(
         template_temp_dir = Path(tempfile.mkdtemp(prefix="remarkable_templates_"))
 
     try:
+        # Fast path: document backed up as a single sibling PDF (imported PDFs /
+        # ePubs rendered to PDF by the device).  Just copy it to the output dir.
+        # Skip this path when .rm files also exist — those are annotated PDFs
+        # where the sibling PDF is the source and the .rm files hold annotations.
+        sibling_pdf: Optional[Path] = notebook.get("sibling_pdf")
+        has_rm_files = bool(notebook.get("rm_files"))
+        if sibling_pdf and sibling_pdf.exists() and not has_rm_files:
+            final_pdf = output_notebook_dir / f"{safe_name}.pdf"
+            if copy_existing_pdf(sibling_pdf, final_pdf):
+                _stamp_pdf_metadata(final_pdf, notebook)
+                results["pdfs_copied"] += 1
+                results["output_files"].append(final_pdf)
+                logging.info("✓ %s: copied PDF to %s", notebook["name"], final_pdf.name)
+            else:
+                logging.warning("Failed to copy sibling PDF for %s", notebook["name"])
+            return results
+
         # Resolve all pages in the correct order via the dedicated resolver.
         content_path = notebook.get("content_file")
         if not content_path:

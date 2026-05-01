@@ -32,6 +32,11 @@ from reportlab.pdfgen import canvas
 REMARKABLE_WIDTH_POINTS = 1404 * 72 / 226  # ~447.6 pts
 REMARKABLE_HEIGHT_POINTS = 1872 * 72 / 226  # ~596.7 pts
 
+# Known file sizes of the rmc "blank skeleton" PDF — produced when rmc
+# successfully runs but the .rm file uses a format it cannot parse.
+# All PDF structure is present but no paths are drawn.
+_RMC_BLANK_SIZES = frozenset({1391, 1394})
+
 # Import modular converter classes
 from .converters import V4Converter, V5Converter, V6Converter
 from .page_resolver import PageResolver, ResolutionReport, detect_rm_version
@@ -262,7 +267,11 @@ def _stamp_pdf_metadata(pdf_path: Path, notebook: Dict) -> None:
             except (OSError, json.JSONDecodeError):
                 pass
 
-        info = {"/Title": title, "/Producer": "RemarkableSync"}
+        info = {
+            "/Title": title,
+            "/Producer": "RemarkableSync",
+            "/Subject": notebook.get("uuid", ""),
+        }
         if created:
             info["/CreationDate"] = created
         if modified:
@@ -522,6 +531,19 @@ def copy_existing_pdf(pdf_file: Path, output_file: Path) -> bool:
 
 _default_page_resolver = PageResolver()
 
+_sibling_page_count_cache: dict = {}
+
+
+def _sibling_page_count(sibling_pdf: Path) -> int:
+    """Return the number of pages in *sibling_pdf*, cached per path."""
+    key = str(sibling_pdf)
+    if key not in _sibling_page_count_cache:
+        try:
+            _sibling_page_count_cache[key] = len(PdfReader(str(sibling_pdf)).pages)
+        except Exception:  # noqa: BLE001
+            _sibling_page_count_cache[key] = 0
+    return _sibling_page_count_cache[key]
+
 
 def get_page_templates(content_file: Path) -> Dict[str, str]:
     """Extract template names for each page from .content file.
@@ -610,13 +632,19 @@ def convert_notebook(
             output_notebook_dir = output_notebook_dir / folder
     output_notebook_dir.mkdir(parents=True, exist_ok=True)
 
-    # Avoid clobbering an existing PDF from a different notebook with the same
-    # display name in the same folder (e.g. two invoices named identically).
+    # Avoid clobbering an existing PDF from a *different* notebook with the
+    # same display name in the same folder (e.g. two invoices named identically).
+    # If the existing file was produced from this same UUID, overwrite it normally.
     candidate = output_notebook_dir / f"{safe_name}.pdf"
     if candidate.exists():
-        existing_uuid_marker = f"_{notebook['uuid'][:8]}"
-        if existing_uuid_marker not in safe_name:
-            safe_name = f"{safe_name}{existing_uuid_marker}"
+        existing_belongs_to_us = False
+        try:
+            _r = PdfReader(str(candidate))
+            existing_belongs_to_us = _r.metadata.get("/Subject", "") == notebook["uuid"]
+        except Exception:  # noqa: BLE001
+            pass
+        if not existing_belongs_to_us:
+            safe_name = f"{safe_name}_{notebook['uuid'][:8]}"
 
     results = {
         "name": notebook["name"],
@@ -736,9 +764,16 @@ def convert_notebook(
             conversion_success = False
             rm_file_exists = rm_file is not None and rm_file.exists()
 
-            # If the file is missing and the page has no template, emit a
-            # single empty placeholder page rather than running the renderer.
-            if not rm_file_exists and (template_name == "Blank" or not template_name):
+            # If the file is missing, no template, and no sibling PDF to fall
+            # back to — emit a blank placeholder and move on.
+            sibling_has_this_page = (
+                sibling_pdf and sibling_pdf.exists() and i < _sibling_page_count(sibling_pdf)
+            )
+            if (
+                not rm_file_exists
+                and (template_name == "Blank" or not template_name)
+                and not sibling_has_this_page
+            ):
                 c = canvas.Canvas(
                     str(temp_pdf_content),
                     pagesize=(REMARKABLE_WIDTH_POINTS, REMARKABLE_HEIGHT_POINTS),
@@ -752,6 +787,59 @@ def convert_notebook(
 
             if rm_file_exists:
                 conversion_success = conv_func(rm_file, temp_pdf_content)
+                # rmc silently produces a skeleton PDF (1391 or 1394 bytes
+                # depending on version) when it cannot parse the .rm format.
+                # All PDF operators are present but no paths are drawn.
+                # Treat these exact sizes as blank output so sibling fallback fires.
+                if conversion_success and temp_pdf_content.exists():
+                    if temp_pdf_content.stat().st_size in _RMC_BLANK_SIZES:
+                        logging.debug(
+                            "Page %d: rmc blank skeleton detected (%d bytes), treating as failed",
+                            i + 1,
+                            temp_pdf_content.stat().st_size,
+                        )
+                        conversion_success = False
+
+                # When a sibling PDF exists, rescale the converted .rm page to
+                # match the sibling's page dimensions for a consistent output.
+                if (
+                    conversion_success
+                    and temp_pdf_content.exists()
+                    and sibling_pdf
+                    and sibling_pdf.exists()
+                ):
+                    try:
+                        sibling_reader = PdfReader(str(sibling_pdf))
+                        ref_page = sibling_reader.pages[min(i, len(sibling_reader.pages) - 1)]
+                        ref_w = float(ref_page.mediabox.width)
+                        ref_h = float(ref_page.mediabox.height)
+                        src_reader = PdfReader(str(temp_pdf_content))
+                        src_page = src_reader.pages[0]
+                        src_w = float(src_page.mediabox.width)
+                        src_h = float(src_page.mediabox.height)
+                        if abs(src_w - ref_w) > 1 or abs(src_h - ref_h) > 1:
+                            from PyPDF2.generic import ArrayObject, FloatObject
+
+                            scale_x = ref_w / src_w if src_w else 1.0
+                            scale_y = ref_h / src_h if src_h else 1.0
+                            # Scale the content stream and update mediabox in-place.
+                            src_page.add_transformation((scale_x, 0, 0, scale_y, 0, 0))
+                            src_page.mediabox.lower_left = (0, 0)
+                            src_page.mediabox.upper_right = (ref_w, ref_h)
+                            scaled_writer = PdfWriter()
+                            scaled_writer.add_page(src_page)
+                            with open(temp_pdf_content, "wb") as fh:
+                                scaled_writer.write(fh)
+                            logging.debug(
+                                "Page %d: scaled from %.0fx%.0f to %.0fx%.0f pts",
+                                i + 1,
+                                src_w,
+                                src_h,
+                                ref_w,
+                                ref_h,
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        logging.debug("Page %d: scale to sibling size failed: %s", i + 1, exc)
 
             if not conversion_success:
                 # For missing .rm files: extract the corresponding page from the
@@ -759,7 +847,11 @@ def convert_notebook(
                 # incomplete backup).  Fall back to a blank placeholder only
                 # when no sibling PDF exists or the page index is out of range.
                 extracted = False
-                if not rm_file_exists and sibling_pdf and sibling_pdf.exists():
+                if (
+                    (not rm_file_exists or not conversion_success)
+                    and sibling_pdf
+                    and sibling_pdf.exists()
+                ):
                     try:
                         sibling_reader = PdfReader(str(sibling_pdf))
                         if i < len(sibling_reader.pages):
@@ -768,9 +860,7 @@ def convert_notebook(
                             with open(temp_pdf_content, "wb") as fh:
                                 writer.write(fh)
                             extracted = True
-                            logging.debug(
-                                "Page %d: extracted from sibling PDF (no .rm file)", i + 1
-                            )
+                            logging.debug("Page %d: extracted from sibling PDF", i + 1)
                     except Exception as exc:  # noqa: BLE001
                         logging.debug("Failed to extract sibling page %d: %s", i + 1, exc)
 

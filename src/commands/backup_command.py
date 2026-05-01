@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..backup import ReMarkableBackup
-from ..utils.logging import setup_logging
+from ..utils.logging import log_run_parameters, setup_logging
 
 
 def run_backup_command(
@@ -30,6 +30,16 @@ def run_backup_command(
         Exit code (0 for success, 1 for failure)
     """
     log_path = setup_logging(verbose, log_dir=backup_dir)
+    log_run_parameters(
+        "backup",
+        {
+            "host": host,
+            "backup_dir": backup_dir.absolute(),
+            "verbose": verbose,
+            "force": force,
+            "skip_templates": skip_templates,
+        },
+    )
 
     print("ReMarkable Tablet Backup")
     print("=" * 40)

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..converter import run_conversion
-from ..utils.logging import setup_logging
+from ..utils.logging import log_run_parameters, setup_logging
 
 
 def run_convert_command(
@@ -41,6 +41,20 @@ def run_convert_command(
         Exit code (``0`` for success, non-zero for failure).
     """
     log_path = setup_logging(verbose, log_dir=backup_dir)
+    log_run_parameters(
+        "convert",
+        {
+            "backup_dir": backup_dir.absolute(),
+            "output_dir": output_dir or (backup_dir / "PDF"),
+            "templates_dir": templates_dir or "<default>",
+            "verbose": verbose,
+            "strict": strict,
+            "force_all": force_all,
+            "no_templates": no_templates,
+            "sample": sample,
+            "notebook": notebook or "<all>",
+        },
+    )
 
     if not backup_dir.exists():
         print(f"[ERROR] Backup directory not found: {backup_dir}")

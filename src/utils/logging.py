@@ -56,3 +56,22 @@ def setup_logging(verbose: bool = False, log_dir: Optional[Path] = None) -> Path
 
     logging.info("Log file: %s", log_path)
     return log_path
+
+
+def log_run_parameters(command: str, params: dict) -> None:
+    """Write all run parameters to the log at INFO level.
+
+    Call this immediately after :func:`setup_logging` so every log file
+    begins with a clear record of how the run was invoked.
+
+    Args:
+        command: Name of the command being run (e.g. ``"sync"``).
+        params: Mapping of parameter name → value to record.
+    """
+    logging.info("=" * 60)
+    logging.info("Command  : %s", command)
+    logging.info("Started  : %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    logging.info("Parameters:")
+    for key, value in params.items():
+        logging.info("  %-22s %s", f"{key}:", value)
+    logging.info("=" * 60)

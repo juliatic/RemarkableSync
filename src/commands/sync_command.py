@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..backup import ReMarkableBackup
-from ..utils.logging import setup_logging
+from ..utils.logging import log_run_parameters, setup_logging
 
 
 def run_sync_command(
@@ -39,6 +39,21 @@ def run_sync_command(
         Exit code (0 for success, 1 for failure)
     """
     log_path = setup_logging(verbose, log_dir=backup_dir)
+    log_run_parameters(
+        "sync",
+        {
+            "host": host,
+            "backup_dir": backup_dir.absolute(),
+            "output_dir": output_dir or (backup_dir / "PDF"),
+            "templates_dir": templates_dir or "<default>",
+            "verbose": verbose,
+            "strict": strict,
+            "force_backup": force_backup,
+            "force_convert": force_convert,
+            "skip_templates": skip_templates,
+            "no_templates": no_templates,
+        },
+    )
 
     if output_dir is None:
         output_dir = backup_dir / "PDF"

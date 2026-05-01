@@ -230,7 +230,9 @@ class ReMarkableConnection:
                                     return False
                         else:
                             # User-entered password was wrong
-                            logging.error("Authentication failed: Incorrect password or rejected by server")
+                            logging.error(
+                                "Authentication failed: Incorrect password or rejected by server"
+                            )
                             print("\nAuthentication failed. Please check your password.")
                             self.password = None
                             password_attempt += 1
@@ -306,7 +308,7 @@ class ReMarkableConnection:
         # Find all files recursively in the remote directory.
         # Find all files in the remote directory.
         # We use '!' instead of '-not' for BusyBox compatibility.
-        command = f"find {remote_path} ! -type d -exec stat -c '%Y %s %n' {{}} \\;"
+        command = f"find {remote_path} ! -type d -exec stat -L -c '%Y %s %n' {{}} \\;"
         stdout, stderr, exit_code = self.execute_command(command)
 
         if exit_code != 0:

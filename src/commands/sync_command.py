@@ -38,7 +38,7 @@ def run_sync_command(
     Returns:
         Exit code (0 for success, 1 for failure)
     """
-    setup_logging(verbose)
+    log_path = setup_logging(verbose, log_dir=backup_dir)
 
     if output_dir is None:
         output_dir = backup_dir / "PDF"
@@ -60,9 +60,7 @@ def run_sync_command(
     if force_convert:
         print("Force convert: All notebooks will be converted")
 
-    backup_tool = ReMarkableBackup(
-        backup_dir, password, host=host, output_dir=output_dir
-    )
+    backup_tool = ReMarkableBackup(backup_dir, password, host=host, output_dir=output_dir)
 
     try:
         # Run backup with PDF conversion enabled
@@ -80,9 +78,9 @@ def run_sync_command(
             print(f"Files backed up to: {backup_tool.files_dir}")
             if not skip_templates:
                 print(f"Templates backed up to: {backup_tool.templates_dir}")
-
             if output_dir.exists():
                 print(f"PDFs generated in: {output_dir}")
+            print(f"Log file: {log_path}")
             return 0
         else:
             print("\n[ERROR] Sync failed. Check logs for details.")

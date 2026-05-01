@@ -29,13 +29,14 @@ from reportlab.pdfgen import canvas
 
 # ReMarkable screen dimensions in PDF points (72 DPI)
 # Physical screen is 1404x1872 pixels at 226 DPI
-REMARKABLE_WIDTH_POINTS = 1404 * 72 / 226   # ~447.6 pts
+REMARKABLE_WIDTH_POINTS = 1404 * 72 / 226  # ~447.6 pts
 REMARKABLE_HEIGHT_POINTS = 1872 * 72 / 226  # ~596.7 pts
 
 # Import modular converter classes
 from .converters import V4Converter, V5Converter, V6Converter
 from .page_resolver import PageResolver, ResolutionReport, detect_rm_version
 from .template_renderer import TemplateRenderer
+from .utils.logging import setup_logging
 
 # Suppress warnings from third-party libraries to reduce output noise
 warnings.filterwarnings("ignore")
@@ -66,26 +67,6 @@ class PageResolutionError(Exception):
             f"Strict mode: notebook {notebook_name!r} has unresolved pages "
             f"({', '.join(details) or 'unknown reason'})"
         )
-
-
-def setup_logging(verbose: bool = False):
-    """Configure logging with appropriate levels and formatting.
-
-    Sets up logging with timestamp formatting and suppresses verbose
-    output from third-party libraries (svglib, reportlab) that can
-    clutter the console during PDF conversion.
-
-    Args:
-        verbose: Enable DEBUG level logging if True, INFO level if False
-    """
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level, format="%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-    )
-
-    # Suppress verbose debug messages from svglib that clutter the output
-    logging.getLogger("svglib.svglib").setLevel(logging.WARNING)
-    logging.getLogger("reportlab").setLevel(logging.WARNING)
 
 
 # Initialize converter instances as module-level objects for reuse
@@ -327,9 +308,7 @@ def merge_pdf_with_template(
         writer = PdfWriter()
 
         has_template = bool(
-            template_pdf
-            and template_pdf.exists()
-            and len(PdfReader(str(template_pdf)).pages) > 0
+            template_pdf and template_pdf.exists() and len(PdfReader(str(template_pdf)).pages) > 0
         )
 
         if not has_template:
@@ -389,9 +368,7 @@ def merge_pdfs(pdf_files: List[Path], output_file: Path) -> bool:
                 logging.warning("PDF chunk missing: %s", pdf_file)
 
         ok = _write_pdf(writer, output_file)
-        logging.debug(
-            "Final PDF written to %s (pages: %d)", output_file, len(writer.pages)
-        )
+        logging.debug("Final PDF written to %s (pages: %d)", output_file, len(writer.pages))
         return ok
 
     except Exception as e:  # noqa: BLE001
@@ -581,9 +558,7 @@ def get_ordered_pages(content_file: Path) -> List[Dict]:
     files_dir = content_file.parent / content_file.stem
     return [
         {
-            "path": page.rm_file
-            if page.rm_file is not None
-            else files_dir / f"{page.page_id}.rm",
+            "path": page.rm_file if page.rm_file is not None else files_dir / f"{page.page_id}.rm",
             "id": page.page_id,
             "version": page.version,
         }
@@ -642,9 +617,9 @@ def convert_notebook(
         "output_files": [],
         # New: structural anomaly reporting (non-empty values surface to the
         # CLI summary so silent page-skipping can no longer pass unnoticed).
-        "missing_pages": [],          # list of page UUIDs with no .rm file
-        "expected_page_count": 0,     # from .content manifest
-        "resolved_page_count": 0,     # what we actually found
+        "missing_pages": [],  # list of page UUIDs with no .rm file
+        "expected_page_count": 0,  # from .content manifest
+        "resolved_page_count": 0,  # what we actually found
     }
 
     # Collect all PDF pages to merge
@@ -664,9 +639,7 @@ def convert_notebook(
             content_path = metadata_file.with_suffix(".content") if metadata_file else None
 
         report: ResolutionReport = (
-            _default_page_resolver.resolve(content_path)
-            if content_path
-            else ResolutionReport()
+            _default_page_resolver.resolve(content_path) if content_path else ResolutionReport()
         )
         results["expected_page_count"] = report.expected_page_count
         results["resolved_page_count"] = len(report.pages)
@@ -755,9 +728,7 @@ def convert_notebook(
                 if not rm_file_exists:
                     c.drawString(50, 50, f"[Page {i+1} - Drawing data missing]")
                 else:
-                    logging.error(
-                        f"Conversion function failed for page {i+1} ({rm_file.name})"
-                    )
+                    logging.error(f"Conversion function failed for page {i+1} ({rm_file.name})")
                     c.drawString(50, 50, f"[Page {i+1} - Conversion failed]")
                 c.save()
 
@@ -767,9 +738,7 @@ def convert_notebook(
                     temp_template_pdf = template_temp_dir / f"template_{i+1:03d}.pdf"
                     temp_pdf_final = temp_dir / f"page_{i+1:03d}.pdf"
 
-                    if template_renderer.render_template_to_pdf(
-                        template_name, temp_template_pdf
-                    ):
+                    if template_renderer.render_template_to_pdf(template_name, temp_template_pdf):
                         if merge_pdf_with_template(
                             temp_pdf_content, temp_template_pdf, temp_pdf_final
                         ):

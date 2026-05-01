@@ -29,7 +29,7 @@ def run_backup_command(
     Returns:
         Exit code (0 for success, 1 for failure)
     """
-    setup_logging(verbose)
+    log_path = setup_logging(verbose, log_dir=backup_dir)
 
     print("ReMarkable Tablet Backup")
     print("=" * 40)
@@ -55,6 +55,7 @@ def run_backup_command(
             print(f"Files backed up to: {backup_tool.files_dir}")
             if not skip_templates:
                 print(f"Templates backed up to: {backup_tool.templates_dir}")
+            print(f"Log file: {log_path}")
             return 0
         else:
             print("\n[ERROR] Backup failed. Check logs for details.")

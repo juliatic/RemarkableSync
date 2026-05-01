@@ -25,9 +25,7 @@ from src.hybrid_converter import (
 
 def _write_pdf(path: Path, label: str = "stub") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    c = canvas.Canvas(
-        str(path), pagesize=(REMARKABLE_WIDTH_POINTS, REMARKABLE_HEIGHT_POINTS)
-    )
+    c = canvas.Canvas(str(path), pagesize=(REMARKABLE_WIDTH_POINTS, REMARKABLE_HEIGHT_POINTS))
     c.drawString(72, 72, label)
     c.showPage()
     c.save()
@@ -164,28 +162,77 @@ class VerifyDownloadSizeTests(unittest.TestCase):
 
     def test_matching_size_is_accepted(self) -> None:
         self.local.write_bytes(b"x" * 100)
-        self.assertTrue(
-            _verify_download_size(self.local, {"size": 100, "path": "/r"})
-        )
+        self.assertTrue(_verify_download_size(self.local, {"size": 100, "path": "/r"}))
 
     def test_truncated_download_is_rejected_and_removed(self) -> None:
         self.local.write_bytes(b"x" * 50)
-        self.assertFalse(
-            _verify_download_size(self.local, {"size": 100, "path": "/r"})
-        )
+        self.assertFalse(_verify_download_size(self.local, {"size": 100, "path": "/r"}))
         # The corrupted file must be removed so the next sync retries it.
         self.assertFalse(self.local.exists())
 
     def test_missing_local_file_is_rejected(self) -> None:
-        self.assertFalse(
-            _verify_download_size(self.local, {"size": 100, "path": "/r"})
-        )
+        self.assertFalse(_verify_download_size(self.local, {"size": 100, "path": "/r"}))
 
     def test_missing_remote_size_does_not_block_sync(self) -> None:
         self.local.write_bytes(b"data")
-        self.assertTrue(
-            _verify_download_size(self.local, {"path": "/r"})
-        )
+        self.assertTrue(_verify_download_size(self.local, {"path": "/r"}))
+
+
+class TruncatedDownloadExcludedFromConversionTests(unittest.TestCase):
+    """Regression: notebooks with any truncated download must be excluded from
+    same-run conversion so the converter never receives incomplete .rm files."""
+
+    UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+    def _make_remote_file(self, path: str, size: int) -> dict:
+        return {"path": path, "mtime": 1000, "size": size}
+
+    def test_truncated_rm_file_excludes_notebook_from_conversion(self) -> None:
+        """If a .rm download is truncated, the owning notebook UUID must NOT
+        appear in the set returned by backup_files (safe_to_convert)."""
+        from unittest.mock import MagicMock, patch
+
+        from src.backup.backup_manager import ReMarkableBackup
+
+        with tempfile.TemporaryDirectory() as tmp:
+            backup_dir = Path(tmp)
+            tool = ReMarkableBackup(backup_dir, password=None)
+
+            remote_rm = self._make_remote_file(
+                f"/home/root/.local/share/remarkable/xochitl/{self.UUID}/{self.UUID}.rm",
+                size=1000,
+            )
+            remote_meta = self._make_remote_file(
+                f"/home/root/.local/share/remarkable/xochitl/{self.UUID}.metadata",
+                size=50,
+            )
+
+            def fake_list_files(path):
+                return [remote_rm, remote_meta]
+
+            def fake_get(remote_path, local_path):
+                p = Path(local_path)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                if remote_path.endswith(".rm"):
+                    p.write_bytes(b"x" * 500)  # truncated — 500 != 1000
+                else:
+                    p.write_bytes(b"y" * 50)
+
+            mock_conn = MagicMock()
+            mock_conn.connect.return_value = True
+            mock_conn.list_files.side_effect = fake_list_files
+            mock_conn.scp_client = MagicMock()
+            mock_conn.scp_client.get.side_effect = fake_get
+            tool.connection = mock_conn
+
+            success, safe_uuids = tool.backup_files()
+
+            self.assertTrue(success)
+            self.assertNotIn(
+                self.UUID,
+                safe_uuids,
+                "Notebook with a truncated .rm file must be excluded from same-run conversion",
+            )
 
 
 if __name__ == "__main__":

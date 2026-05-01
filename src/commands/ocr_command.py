@@ -21,13 +21,8 @@ from typing import List, Optional
 from tqdm import tqdm
 
 from ..ocr import OCRBackendUnavailable, discover_backend
-from ..ocr.writers import (
-    write_markdown_sidecar,
-    write_text_pdf,
-    write_text_sidecar,
-)
+from ..ocr.writers import write_markdown_sidecar, write_text_pdf, write_text_sidecar
 from ..utils.logging import setup_logging
-
 
 _VALID_FORMATS = {"pdf", "txt", "md", "all"}
 
@@ -54,7 +49,7 @@ def run_ocr_command(
     Returns:
         Process exit code (0 on success, non-zero on failure).
     """
-    setup_logging(verbose)
+    log_path = setup_logging(verbose, log_dir=pdf_dir)
 
     if not pdf_dir.exists():
         print(f"[ERROR] PDF directory not found: {pdf_dir}")
@@ -62,10 +57,7 @@ def run_ocr_command(
 
     formats = _normalise_formats(output_formats)
     if not formats:
-        print(
-            f"[ERROR] Invalid --format value(s); choose from: "
-            f"{sorted(_VALID_FORMATS)}"
-        )
+        print(f"[ERROR] Invalid --format value(s); choose from: " f"{sorted(_VALID_FORMATS)}")
         return 2
 
     target_dir = output_dir or pdf_dir
@@ -83,9 +75,7 @@ def run_ocr_command(
         return 3
 
     if not backend.is_available():
-        print(
-            f"[ERROR] OCR backend '{backend.name}' is not available on this host."
-        )
+        print(f"[ERROR] OCR backend '{backend.name}' is not available on this host.")
         return 3
 
     print(f"OCR backend: {backend.name}")
@@ -106,22 +96,17 @@ def run_ocr_command(
             wrote_any = False
 
             if "pdf" in formats:
-                wrote_any |= write_text_pdf(
-                    result, base.with_name(f"{base.name}_text.pdf")
-                )
+                wrote_any |= write_text_pdf(result, base.with_name(f"{base.name}_text.pdf"))
             if "txt" in formats:
-                wrote_any |= write_text_sidecar(
-                    result, base.with_suffix(".txt")
-                )
+                wrote_any |= write_text_sidecar(result, base.with_suffix(".txt"))
             if "md" in formats:
-                wrote_any |= write_markdown_sidecar(
-                    result, base.with_suffix(".md")
-                )
+                wrote_any |= write_markdown_sidecar(result, base.with_suffix(".md"))
 
             if wrote_any:
                 successes += 1
 
     print(f"\nOCR complete: {successes}/{len(pdfs)} PDFs processed")
+    print(f"Log file: {log_path}")
     return 0 if successes > 0 else 1
 
 

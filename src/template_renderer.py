@@ -49,6 +49,7 @@ class TemplateRenderer:
         self.templates_json_path = templates_dir / "templates.json"
         self.template_cache: Dict[str, Dict] = {}
         self.templates_metadata: Dict[str, Dict] = {}
+        self._filename_to_metadata: Dict[str, Dict] = {}
 
         self._load_templates_metadata()
 
@@ -65,6 +66,9 @@ class TemplateRenderer:
                     name = template.get("name", "")
                     if name:
                         self.templates_metadata[name] = template
+                    filename = template.get("filename", "")
+                    if filename:
+                        self._filename_to_metadata[filename] = template
             logging.info(f"Loaded {len(self.templates_metadata)} template definitions")
         except Exception as e:
             logging.warning(f"Failed to load templates.json: {e}")
@@ -81,20 +85,30 @@ class TemplateRenderer:
         if not template_name or template_name == "Blank":
             return None
 
-        # Try to get filename from metadata
-        template_info = self.templates_metadata.get(template_name)
+        # Look up metadata by name first, then by filename (the value stored in
+        # .content page entries is the filename key, not the display name).
+        template_info = self.templates_metadata.get(
+            template_name
+        ) or self._filename_to_metadata.get(template_name)
         if template_info:
             filename = template_info.get("filename", template_name)
         else:
             filename = template_name
 
-        # Try with common extensions
+        # Try with common extensions — .template is the extension used by backed-up
+        # device template files; image variants come after.
         for ext in [".template", ".png", ".svg", ".jpg", ".jpeg"]:
             template_file = self.templates_dir / f"{filename}{ext}"
             if template_file.exists():
                 return template_file
 
-        logging.debug(f"Template file not found for: {template_name}")
+        logging.warning(
+            "Template file not found for %r (looked for filename %r in %s). "
+            "Re-run backup to download missing template assets from the device.",
+            template_name,
+            filename,
+            self.templates_dir,
+        )
         return None
 
     def load_template(self, template_name: str) -> Optional[Dict]:
@@ -129,50 +143,60 @@ class TemplateRenderer:
     def render_template_to_pdf(self, template_name: str, output_pdf: Path) -> bool:
         """Render a template as a PDF file.
 
-        This creates a simple PDF with basic template rendering.
-        For complex templates, this provides a basic grid/line background.
+        Rendering strategy (in order):
+
+        1. If the template file is an image (PNG/SVG/JPG), draw it as a full-
+           page background — this covers all custom user templates.
+        2. If the template file is a ``.template`` JSON, detect the pattern
+           type from the template's own ``name`` and ``categories`` fields and
+           render a matching vector background (grid, lines, dots).
+        3. Fall back to a blank PDF so that page compositing still works even
+           when the template asset is missing or unrenderable.
 
         Args:
-            template_name: Name of the template to render
-            output_pdf: Path where the PDF should be saved
+            template_name: Template key as stored in the ``.content`` file
+                (may be a ``filename`` value like ``characters_template`` or a
+                display ``name`` like ``P Grid small``).
+            output_pdf: Path where the resulting PDF should be saved.
 
         Returns:
-            bool: True if successful, False otherwise
+            bool: True if the PDF was written, False otherwise.
         """
         if not template_name or template_name == "Blank":
-            # For blank templates, create a blank PDF
             return self._create_blank_pdf(output_pdf)
 
         try:
-            # Create PDF with ReMarkable dimensions
             c = canvas.Canvas(
                 str(output_pdf), pagesize=(self.REMARKABLE_WIDTH, self.REMARKABLE_HEIGHT)
             )
 
-            # 1. Try to render as an image first if it's a custom template
-            if not any(p in template_name.lower() for p in ["grid", "lines", "dots"]):
-                if self._render_image_background(c, template_name):
-                    c.save()
-                    return output_pdf.exists()
+            # 1. Always try image rendering first — covers PNG/SVG custom templates.
+            if self._render_image_background(c, template_name):
+                c.save()
+                return output_pdf.exists()
 
-            # 2. Otherwise, load template metadata for patterns
+            # 2. Try JSON .template vector pattern rendering.
             template_data = self.load_template(template_name)
-            
-            # Pattern rendering
             if template_data is not None:
-                if "Grid" in template_name or "grid" in template_name.lower():
+                # Detect pattern type from the template's own metadata, not
+                # from the lookup key, so filename-based keys work correctly.
+                display_name = template_data.get("name", template_name)
+                categories = [cat.lower() for cat in template_data.get("categories", [])]
+                name_lower = display_name.lower()
+
+                if "grid" in name_lower or "grid" in categories:
                     self._render_grid(c, template_data)
-                elif "Lines" in template_name or "lines" in template_name.lower():
+                elif "lines" in name_lower or "lines" in categories or "lined" in name_lower:
                     self._render_lines(c, template_data)
-                elif "Dots" in template_name or "dots" in template_name.lower():
+                elif "dots" in name_lower or "dots" in categories:
                     self._render_dots(c, template_data)
                 else:
-                    # Fallback to image if not a pattern
-                    if not self._render_image_background(c, template_name):
-                        logging.debug(f"No pattern or image found for template {template_name}")
-            else:
-                # No data and no image found earlier
-                logging.debug(f"No data found for template {template_name}")
+                    logging.debug(
+                        "No renderable pattern detected for template %r (name=%r, categories=%s)",
+                        template_name,
+                        display_name,
+                        categories,
+                    )
 
             c.save()
             return output_pdf.exists()
@@ -314,6 +338,7 @@ class TemplateRenderer:
             if image_path.suffix.lower() == ".svg":
                 # Convert SVG to drawing then draw on canvas
                 from svglib.svglib import svg2rlg
+
                 drawing = svg2rlg(str(image_path))
                 if drawing:
                     # Scale to fit ReMarkable dimensions
@@ -322,6 +347,7 @@ class TemplateRenderer:
                     c.saveState()
                     c.scale(scale_x, scale_y)
                     from reportlab.graphics import renderPDF
+
                     renderPDF.draw(drawing, c, 0, 0)
                     c.restoreState()
                     return True

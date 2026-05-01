@@ -25,7 +25,6 @@ from typing import List, Optional
 
 from ..utils.logging import setup_logging
 
-
 # NotebookLM's documented per-source upload limits, as of plan date.
 # These are conservative; raise via --max-mb if Google later relaxes them.
 _DEFAULT_MAX_MB = 200
@@ -66,7 +65,7 @@ def run_notebooklm_bundle_command(
     Returns:
         Process exit code.
     """
-    setup_logging(verbose)
+    setup_logging(verbose, log_dir=output_dir)
 
     if not pdf_dir.exists():
         print(f"[ERROR] PDF directory not found: {pdf_dir}")
@@ -176,18 +175,12 @@ def _render_manifest(entries: List[BundleEntry], pdf_dir: Path) -> str:
     for entry in sorted(entries, key=lambda e: str(e.relative_dest)):
         kind = "OCR text" if entry.is_ocr else "Graphical"
         size_kb = entry.size_bytes / 1024
-        size_label = (
-            f"{size_kb / 1024:.1f} MB"
-            if size_kb > 1024
-            else f"{size_kb:.0f} KB"
-        )
+        size_label = f"{size_kb / 1024:.1f} MB" if size_kb > 1024 else f"{size_kb:.0f} KB"
         try:
             original = entry.source.relative_to(pdf_dir)
         except ValueError:
             original = entry.source
-        lines.append(
-            f"| `{entry.relative_dest}` | {kind} | {size_label} | `{original}` |"
-        )
+        lines.append(f"| `{entry.relative_dest}` | {kind} | {size_label} | `{original}` |")
     lines.append("")
     lines.append(
         "_Upload these files as sources in a NotebookLM project. "

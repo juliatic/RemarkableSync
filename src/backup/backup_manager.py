@@ -118,7 +118,11 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
         """Backup files from ReMarkable tablet.
 
         Returns:
-            Tuple of (success, set of notebook UUIDs that were updated)
+            Tuple of (success, set of notebook UUIDs that were *fully* updated).
+            Notebooks that had any truncated/failed download are excluded from
+            the returned set so the caller does not attempt to convert an
+            incomplete notebook in the same run.  They will be retried on the
+            next backup invocation.
         """
         logging.info("Starting file backup...")
 
@@ -148,8 +152,9 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
 
             logging.info("Syncing %d files...", len(files_to_sync))
 
-            # Track which notebooks have been updated
-            updated_notebooks = set()
+            # Track which notebooks have been updated and which had failures.
+            updated_notebooks: Set[str] = set()
+            failed_notebooks: Set[str] = set()
 
             # Download files with progress bar
             with tqdm(total=len(files_to_sync), desc="Downloading") as pbar:
@@ -168,6 +173,13 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
                         # transfer before we record metadata that would
                         # mark the file as up-to-date next run.
                         if not _verify_download_size(local_path, remote_file):
+                            # Record the owning notebook so we can exclude it
+                            # from same-run conversion (files are incomplete).
+                            _rel = os.path.relpath(remote_file["path"], self.remote_xochitl_dir)
+                            _parts = _rel.split(os.sep)
+                            _uuid = _parts[0].split(".")[0]
+                            if len(_uuid) == 36:
+                                failed_notebooks.add(_uuid)
                             continue
 
                         # Update metadata
@@ -210,13 +222,26 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
             # Save metadata
             self.metadata.save()
 
-            if updated_notebooks:
-                logging.debug("Updated notebook UUIDs: %s", sorted(updated_notebooks))
+            # Exclude any notebook that had at least one failed download; it
+            # will be retried next run once all its files are intact.
+            incomplete = updated_notebooks & failed_notebooks
+            if incomplete:
+                logging.warning(
+                    "%d notebook(s) had truncated downloads and will be skipped for "
+                    "conversion this run (will retry next sync): %s",
+                    len(incomplete),
+                    sorted(incomplete),
+                )
+            safe_to_convert = updated_notebooks - failed_notebooks
+
+            if safe_to_convert:
+                logging.debug("Updated notebook UUIDs: %s", sorted(safe_to_convert))
 
             logging.info(
-                "File backup completed successfully. Updated %d notebooks.", len(updated_notebooks)
+                "File backup completed successfully. Updated %d notebooks.",
+                len(safe_to_convert),
             )
-            return True, updated_notebooks
+            return True, safe_to_convert
 
         except (paramiko.SSHException, OSError) as e:
             logging.error("Backup failed: %s", e)
@@ -258,6 +283,7 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
 
             if not files_to_sync:
                 logging.info("All template files are up to date")
+                self._ensure_custom_template_assets(remote_files)
                 return True
 
             logging.info("Syncing %d template files...", len(files_to_sync))
@@ -291,6 +317,12 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
             # Save metadata
             self.metadata.save()
 
+            # Cross-check templates.json for custom template image files that
+            # are referenced but not present locally.  The incremental sync
+            # can silently miss them when the metadata record was written before
+            # a custom template was created (or when its mtime hasn't changed).
+            self._ensure_custom_template_assets(remote_files)
+
             logging.info("Template backup completed successfully")
             return True
 
@@ -300,6 +332,86 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
 
         finally:
             self.connection.disconnect()
+
+    def _ensure_custom_template_assets(self, remote_files: List[Dict]) -> None:
+        """Force-download any custom template image files missing from the local backup.
+
+        After a normal incremental sync the remote ``templates.json`` may
+        reference custom template filenames (``filename`` field, category
+        ``"Custom"``) whose image files were never downloaded — either because
+        the template was added after the last full sync or because the
+        incremental metadata considered them up-to-date.
+
+        This method parses the local ``templates.json``, identifies every
+        custom-template filename, checks whether any image variant exists
+        locally, and fetches the missing ones directly from the device.
+        """
+        tpl_json_path = self.templates_dir / "templates.json"
+        if not tpl_json_path.exists():
+            return
+
+        try:
+            with open(tpl_json_path, "r", encoding="utf-8") as fh:
+                tpl_data = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            logging.warning("Could not parse templates.json for custom asset check: %s", exc)
+            return
+
+        image_extensions = [".png", ".svg", ".jpg", ".jpeg"]
+        remote_by_name = {os.path.basename(f["path"]): f for f in remote_files}
+
+        missing_filenames = []
+        for template in tpl_data.get("templates", []):
+            if "Custom" not in template.get("categories", []):
+                continue
+            filename = template.get("filename", "")
+            if not filename:
+                continue
+            local_present = any(
+                (self.templates_dir / (filename + ext)).exists() for ext in image_extensions
+            )
+            if not local_present:
+                missing_filenames.append(filename)
+
+        if not missing_filenames:
+            return
+
+        logging.warning(
+            "%d custom template asset(s) are missing locally: %s — attempting forced download.",
+            len(missing_filenames),
+            missing_filenames,
+        )
+
+        for filename in missing_filenames:
+            downloaded = False
+            for ext in image_extensions:
+                remote_name = filename + ext
+                remote_file = remote_by_name.get(remote_name)
+                if remote_file is None:
+                    continue
+                local_path = self.templates_dir / remote_name
+                try:
+                    if self.connection.scp_client is None:
+                        logging.error("SCP client not available for custom template download")
+                        break
+                    self.connection.scp_client.get(remote_file["path"], str(local_path))
+                    if _verify_download_size(local_path, remote_file):
+                        self.metadata.update_file_metadata(remote_file, local_path)
+                        logging.info("Downloaded missing custom template asset: %s", remote_name)
+                        downloaded = True
+                        break
+                except (OSError, SCPException) as exc:
+                    logging.error(
+                        "Failed to force-download custom template asset %s: %s", remote_name, exc
+                    )
+
+            if not downloaded:
+                logging.warning(
+                    "Custom template asset %r not found on device " "(expected one of %s in %s).",
+                    filename,
+                    [filename + ext for ext in image_extensions],
+                    self.remote_templates_dir,
+                )
 
     def find_notebooks(self) -> List[Dict]:
         """Find and parse notebook metadata.

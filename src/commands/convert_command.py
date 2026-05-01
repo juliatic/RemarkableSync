@@ -40,7 +40,7 @@ def run_convert_command(
     Returns:
         Exit code (``0`` for success, non-zero for failure).
     """
-    setup_logging(verbose)
+    log_path = setup_logging(verbose, log_dir=backup_dir)
 
     if not backup_dir.exists():
         print(f"[ERROR] Backup directory not found: {backup_dir}")
@@ -88,6 +88,8 @@ def run_convert_command(
             strict=strict,
         )
 
+        if success:
+            print(f"Log file: {log_path}")
         return 0 if success else 1
 
     except KeyboardInterrupt:

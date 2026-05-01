@@ -10,10 +10,11 @@ VENV_DIR="$HOME/venvs/remarkablesync"
 # ── colour helpers ──────────────────────────────────────────────────────────
 bold=$'\e[1m'; reset=$'\e[0m'; cyan=$'\e[36m'; green=$'\e[32m'; yellow=$'\e[33m'
 
-header() { echo; echo "${bold}${cyan}$*${reset}"; echo "$(printf '─%.0s' {1..50})"; }
-ask()    { printf "${bold}%s${reset} " "$1"; }
-info()   { echo "${green}▶ $*${reset}"; }
-warn()   { echo "${yellow}⚠  $*${reset}"; }
+header()  { echo; echo "${bold}${cyan}$*${reset}"; echo "$(printf '─%.0s' {1..50})"; }
+ask()     { printf "${bold}%s${reset} " "$1"; }
+info()    { echo "${green}▶ $*${reset}"; }
+warn()    { echo "${yellow}⚠  $*${reset}"; }
+tolower() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
 
 # ── venv bootstrap ──────────────────────────────────────────────────────────
 header "RemarkableSync — Environment Setup"
@@ -83,7 +84,7 @@ if [[ "$COMMAND" == "backup" || "$COMMAND" == "sync" ]]; then
     echo
     ask "Force full backup (re-download all files, not just changed)? [y/N]:"
     read -r force_backup
-    if [[ "${force_backup,,}" == "y" ]]; then
+    if [[ "$(tolower "$force_backup")" == "y" ]]; then
         if [[ "$COMMAND" == "backup" ]]; then
             EXTRA_ARGS="$EXTRA_ARGS --force"
         else
@@ -94,7 +95,7 @@ if [[ "$COMMAND" == "backup" || "$COMMAND" == "sync" ]]; then
     # Skip templates
     ask "Skip backing up device templates? [y/N]:"
     read -r skip_tpl
-    if [[ "${skip_tpl,,}" == "y" ]]; then
+    if [[ "$(tolower "$skip_tpl")" == "y" ]]; then
         EXTRA_ARGS="$EXTRA_ARGS --skip-templates"
     fi
 
@@ -168,7 +169,7 @@ if [[ "$COMMAND" == "convert" || "$COMMAND" == "sync" ]]; then
     # Strict mode
     ask "Strict mode (fail on missing pages instead of placeholders)? [y/N]:"
     read -r strict_mode
-    if [[ "${strict_mode,,}" == "y" ]]; then
+    if [[ "$(tolower "$strict_mode")" == "y" ]]; then
         EXTRA_ARGS="$EXTRA_ARGS --strict"
     fi
 fi
@@ -194,9 +195,9 @@ if [[ "$COMMAND" == "ocr" ]]; then
     ask "  Include TXT output? [y/N]:" ; read -r fmt_txt
     ask "  Include MD  output? [y/N]:" ; read -r fmt_md
 
-    [[ "${fmt_pdf,,}" != "n" ]] && EXTRA_ARGS="$EXTRA_ARGS --format pdf"
-    [[ "${fmt_txt,,}" == "y" ]] && EXTRA_ARGS="$EXTRA_ARGS --format txt"
-    [[ "${fmt_md,,}"  == "y" ]] && EXTRA_ARGS="$EXTRA_ARGS --format md"
+    [[ "$(tolower "$fmt_pdf")" != "n" ]] && EXTRA_ARGS="$EXTRA_ARGS --format pdf"
+    [[ "$(tolower "$fmt_txt")" == "y" ]] && EXTRA_ARGS="$EXTRA_ARGS --format txt"
+    [[ "$(tolower "$fmt_md")"  == "y" ]] && EXTRA_ARGS="$EXTRA_ARGS --format md"
 
     ask "Scope to one notebook (name substring, leave blank for all):"
     read -r OCR_NB
@@ -207,7 +208,7 @@ fi
 echo
 ask "Enable verbose logging? [y/N]:"
 read -r verbose_flag
-[[ "${verbose_flag,,}" == "y" ]] && EXTRA_ARGS="$EXTRA_ARGS --verbose"
+[[ "$(tolower "$verbose_flag")" == "y" ]] && EXTRA_ARGS="$EXTRA_ARGS --verbose"
 
 # ── build final command ───────────────────────────────────────────────────────
 header "Ready to run"
@@ -238,7 +239,7 @@ ask "Run now? [Y/n]:"
 read -r run_now
 run_now="${run_now:-y}"
 
-if [[ "${run_now,,}" == "n" ]]; then
+if [[ "$(tolower "$run_now")" == "n" ]]; then
     echo
     warn "Aborted. You can run manually:"
     echo "  source $VENV_DIR/bin/activate"

@@ -68,9 +68,43 @@ class V6Converter(BaseConverter):
 
         return self._convert_via_svg_cli(rm_file, output_file)
 
+    @staticmethod
+    def _patch_rmc_palette() -> None:
+        """Ensure ``rmc``'s ``RM_PALETTE`` contains entries for every color id
+        that the reMarkable firmware may produce.
+
+        rmc 0.3.0 omits color id 9 (the highlight / ``HIGHLIGHT`` pen) with a
+        comment saying it is handled separately.  Newer device firmware writes
+        strokes with that id, which causes a ``KeyError`` during SVG export.
+        We inject a safe yellow-ish fallback so conversion continues.
+        """
+        try:
+            from rmc.exporters import writing_tools  # type: ignore
+
+            palette = writing_tools.RM_PALETTE
+            known_ids = {k.value for k in palette}
+            for color_id, fallback_rgb in [
+                (9, (251, 247, 25)),  # highlight → yellow
+                (14, (255, 165, 0)),  # any future id → orange
+                (15, (200, 200, 200)),  # any future id → light-grey
+            ]:
+                if color_id not in known_ids:
+                    # Find or fabricate an enum-like key accepted by the dict
+                    # The dict is keyed by PenColor enum members; we need one
+                    # whose .value equals color_id.  Try to locate it first.
+                    pen_color_cls = type(next(iter(palette)))
+                    try:
+                        key = pen_color_cls(color_id)
+                    except ValueError:
+                        key = color_id  # plain int fallback
+                    palette[key] = fallback_rgb
+        except Exception:  # noqa: BLE001
+            pass  # best-effort only; never break the caller
+
     def _convert_with_rmc_api(self, rm_file: Path, output_file: Path) -> bool:
         """Render directly to PDF using the in-process ``rmc`` API."""
         try:
+            self._patch_rmc_palette()
             output_file.parent.mkdir(parents=True, exist_ok=True)
             self._rmc_module.rm_to_pdf(str(rm_file), str(output_file))  # type: ignore[union-attr]
             if output_file.exists() and output_file.stat().st_size > 0:
@@ -85,31 +119,54 @@ class V6Converter(BaseConverter):
             return False
 
     def _convert_via_svg_cli(self, rm_file: Path, output_file: Path) -> bool:
-        """Legacy fallback: rmc CLI → SVG → svglib/reportlab → PDF."""
+        """Legacy fallback: rmc SVG export → svglib/reportlab → PDF.
+
+        Prefer the in-process ``rmc.exporters.svg.rm_to_svg`` API so that
+        the palette patch from ``_patch_rmc_palette()`` is already active —
+        a subprocess would spawn a fresh Python interpreter and lose it.
+        Only fall back to the ``rmc`` CLI subprocess when the in-process SVG
+        API is unavailable (older rmc installs that lack that entry-point).
+        """
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 svg_file = Path(temp_dir) / f"{rm_file.stem}.svg"
 
-                self.logger.debug("Converting %s to SVG using rmc CLI", rm_file.name)
-                result = subprocess.run(
-                    ["rmc", "-t", "svg", "-o", str(svg_file), str(rm_file)],
-                    capture_output=True,
-                    text=True,
-                    timeout=self._RMC_TIMEOUT_SECONDS,
-                    check=False,
-                )
+                # ── preferred: in-process SVG export (patch is already live) ──
+                svg_exported = False
+                try:
+                    from rmc.exporters.svg import rm_to_svg  # type: ignore
 
-                if result.returncode != 0 or not svg_file.exists():
+                    self._patch_rmc_palette()
+                    self.logger.debug("Converting %s to SVG using rmc API", rm_file.name)
+                    rm_to_svg(str(rm_file), str(svg_file))
+                    svg_exported = svg_file.exists() and svg_file.stat().st_size >= 100
+                except Exception as exc:  # noqa: BLE001
                     self.logger.debug(
-                        "rmc CLI conversion failed for %s: %s",
-                        rm_file.name,
-                        result.stderr.strip(),
+                        "rmc in-process SVG export failed for %s: %s", rm_file.name, exc
                     )
-                    return False
 
-                if svg_file.stat().st_size < 100:
-                    self.logger.debug("SVG file suspiciously small for %s", rm_file.name)
-                    return False
+                # ── fallback: rmc CLI subprocess ──────────────────────────────
+                if not svg_exported:
+                    self.logger.debug("Converting %s to SVG using rmc CLI", rm_file.name)
+                    result = subprocess.run(
+                        ["rmc", "-t", "svg", "-o", str(svg_file), str(rm_file)],
+                        capture_output=True,
+                        text=True,
+                        timeout=self._RMC_TIMEOUT_SECONDS,
+                        check=False,
+                    )
+
+                    if result.returncode != 0 or not svg_file.exists():
+                        self.logger.debug(
+                            "rmc CLI conversion failed for %s: %s",
+                            rm_file.name,
+                            result.stderr.strip(),
+                        )
+                        return False
+
+                    if svg_file.stat().st_size < 100:
+                        self.logger.debug("SVG file suspiciously small for %s", rm_file.name)
+                        return False
 
                 return self.svg_to_pdf(svg_file, output_file)
 

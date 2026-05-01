@@ -610,6 +610,14 @@ def convert_notebook(
             output_notebook_dir = output_notebook_dir / folder
     output_notebook_dir.mkdir(parents=True, exist_ok=True)
 
+    # Avoid clobbering an existing PDF from a different notebook with the same
+    # display name in the same folder (e.g. two invoices named identically).
+    candidate = output_notebook_dir / f"{safe_name}.pdf"
+    if candidate.exists():
+        existing_uuid_marker = f"_{notebook['uuid'][:8]}"
+        if existing_uuid_marker not in safe_name:
+            safe_name = f"{safe_name}{existing_uuid_marker}"
+
     results = {
         "name": notebook["name"],
         "folder_path": str(output_notebook_dir.relative_to(output_dir)) if folder_path else "",
@@ -676,8 +684,12 @@ def convert_notebook(
                 missing_id,
             )
 
-        # Strict mode: fail loudly instead of emitting placeholder pages.
-        if strict and (report.has_misses or report.parse_errors):
+        # Strict mode: fail loudly for notebooks with no sibling PDF fallback.
+        if (
+            strict
+            and (report.has_misses or report.parse_errors)
+            and not (sibling_pdf and sibling_pdf.exists())
+        ):
             raise PageResolutionError(
                 notebook_name=notebook["name"],
                 missing_pages=report.missing_page_ids,
@@ -742,18 +754,38 @@ def convert_notebook(
                 conversion_success = conv_func(rm_file, temp_pdf_content)
 
             if not conversion_success:
-                # Create placeholder for failed/missing content
-                c = canvas.Canvas(
-                    str(temp_pdf_content),
-                    pagesize=(REMARKABLE_WIDTH_POINTS, REMARKABLE_HEIGHT_POINTS),
-                )
-                c.setFont("Helvetica", 10)
-                if not rm_file_exists:
-                    c.drawString(50, 50, f"[Page {i+1} - Drawing data missing]")
-                else:
-                    logging.error(f"Conversion function failed for page {i+1} ({rm_file.name})")
-                    c.drawString(50, 50, f"[Page {i+1} - Conversion failed]")
-                c.save()
+                # For missing .rm files: extract the corresponding page from the
+                # sibling PDF when available (annotated imported PDF with
+                # incomplete backup).  Fall back to a blank placeholder only
+                # when no sibling PDF exists or the page index is out of range.
+                extracted = False
+                if not rm_file_exists and sibling_pdf and sibling_pdf.exists():
+                    try:
+                        sibling_reader = PdfReader(str(sibling_pdf))
+                        if i < len(sibling_reader.pages):
+                            writer = PdfWriter()
+                            writer.add_page(sibling_reader.pages[i])
+                            with open(temp_pdf_content, "wb") as fh:
+                                writer.write(fh)
+                            extracted = True
+                            logging.debug(
+                                "Page %d: extracted from sibling PDF (no .rm file)", i + 1
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        logging.debug("Failed to extract sibling page %d: %s", i + 1, exc)
+
+                if not extracted:
+                    c = canvas.Canvas(
+                        str(temp_pdf_content),
+                        pagesize=(REMARKABLE_WIDTH_POINTS, REMARKABLE_HEIGHT_POINTS),
+                    )
+                    c.setFont("Helvetica", 10)
+                    if not rm_file_exists:
+                        c.drawString(50, 50, f"[Page {i+1} - Drawing data missing]")
+                    else:
+                        logging.error(f"Conversion function failed for page {i+1} ({rm_file.name})")
+                        c.drawString(50, 50, f"[Page {i+1} - Conversion failed]")
+                    c.save()
 
             # Apply template if needed
             if template_renderer and template_temp_dir:

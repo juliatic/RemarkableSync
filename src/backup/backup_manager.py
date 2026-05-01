@@ -450,6 +450,36 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
 
         return notebooks
 
+    def _find_unconverted_notebooks(self, output_dir: Path) -> Set[str]:
+        """Return UUIDs of backed-up documents that have no output PDF yet.
+
+        Scans ``Notebooks/`` for ``.metadata`` files whose type is
+        ``DocumentType``, resolves the expected output path (honouring the
+        folder hierarchy), and returns the UUID whenever the output PDF is
+        absent.  This is used as a catch-up pass after a sync run that
+        downloaded nothing new.
+        """
+        from ..hybrid_converter import find_notebooks, get_folder_hierarchy
+
+        unconverted: Set[str] = set()
+        for notebook in find_notebooks(self.backup_dir):
+            if notebook["type"] != "DocumentType":
+                continue
+            hierarchy = get_folder_hierarchy(notebook, self.backup_dir)
+            folder_path = "/".join(hierarchy) if hierarchy else ""
+            output_notebook_dir = output_dir
+            if folder_path:
+                for folder in folder_path.split("/"):
+                    output_notebook_dir = output_notebook_dir / folder
+            safe_name = (
+                "".join(c for c in notebook["name"] if c.isalnum() or c in (" ", "-", "_")).rstrip()
+                or f"notebook_{notebook['uuid'][:8]}"
+            )
+            expected_pdf = output_notebook_dir / f"{safe_name}.pdf"
+            if not expected_pdf.exists():
+                unconverted.add(notebook["uuid"])
+        return unconverted
+
     def convert_to_pdf(self, notebook: Dict) -> Optional[Path]:
         """Convert notebook to PDF using available tools.
 
@@ -561,6 +591,7 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
 
         # Determine conversion strategy
         updated_only_file = None
+        is_catchup = False
         if force_convert_all:
             logging.info("Force conversion enabled - converting all notebooks to PDF")
         elif updated_notebook_uuids:
@@ -577,8 +608,28 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
                 logging.error("Failed to create updated notebooks list: %s", e)
                 return False
         else:
-            logging.info("No notebooks were updated - skipping PDF conversion")
-            return True
+            # No new downloads — but check if any backed-up documents are
+            # missing their output PDF (e.g. newly supported sibling-PDF
+            # documents that were skipped by older versions of the converter).
+            catchup_uuids = self._find_unconverted_notebooks(output_dir)
+            if not catchup_uuids:
+                logging.info("No notebooks were updated - skipping PDF conversion")
+                return True
+            logging.info(
+                "No new downloads, but %d notebook(s) have no output PDF yet — converting",
+                len(catchup_uuids),
+            )
+            updated_list_file = self.backup_dir / "updated_notebooks.txt"
+            try:
+                with open(updated_list_file, "w", encoding="utf-8") as f:
+                    for uuid in sorted(catchup_uuids):
+                        f.write(f"{uuid}\n")
+                updated_only_file = updated_list_file
+                strict = False  # catch-up: never block on missing .rm files
+                is_catchup = True
+            except OSError as e:
+                logging.error("Failed to create updated notebooks list: %s", e)
+                return False
 
         # Run conversion
         try:
@@ -603,10 +654,14 @@ class ReMarkableBackup:  # pylint: disable=too-many-instance-attributes
 
             if success:
                 logging.info("PDF conversion completed successfully")
+            elif is_catchup:
+                logging.warning(
+                    "PDF conversion completed with some failures (check warnings above)"
+                )
             else:
                 logging.error("PDF conversion failed")
 
-            return success
+            return success or is_catchup
 
         except Exception as e:  # pylint: disable=broad-except
             logging.error("Failed to execute PDF conversion: %s", e)

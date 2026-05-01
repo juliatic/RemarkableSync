@@ -50,7 +50,7 @@ def setup_logging(verbose: bool = False, log_dir: Optional[Path] = None) -> Path
     root.addHandler(file_handler)
 
     # ── suppress noisy third-party loggers ───────────────────────────────────
-    for noisy in ("svglib.svglib", "reportlab", "rmscene", "rmc"):
+    for noisy in ("svglib.svglib", "reportlab", "rmscene", "rmscene.tagged_block_reader", "rmc"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logging.getLogger("paramiko").setLevel(logging.DEBUG if verbose else logging.INFO)
 

@@ -678,9 +678,34 @@ def convert_notebook(
         # ePubs rendered to PDF by the device).  Just copy it to the output dir.
         # Skip this path when .rm files also exist — those are annotated PDFs
         # where the sibling PDF is the source and the .rm files hold annotations.
+        #
+        # Also take fast path when .rm files exist but are very few compared to
+        # the sibling PDF page count - extracting page-by-page is too slow.
         sibling_pdf: Optional[Path] = notebook.get("sibling_pdf")
         has_rm_files = bool(notebook.get("rm_files"))
+        rm_file_count = len(notebook.get("rm_files", []))
+
+        # Check if we should take the fast path (copy PDF directly)
+        take_fast_path = False
         if sibling_pdf and sibling_pdf.exists() and not has_rm_files:
+            take_fast_path = True
+        elif sibling_pdf and sibling_pdf.exists() and has_rm_files:
+            # Check if .rm files are a small fraction of total pages
+            try:
+                sibling_page_count = _sibling_page_count(sibling_pdf)
+                # If fewer than 10% of pages have .rm files, copy PDF directly
+                if rm_file_count < sibling_page_count * 0.1:
+                    logging.debug(
+                        "%s: Only %d .rm files for %d pages, copying sibling PDF directly",
+                        notebook["name"],
+                        rm_file_count,
+                        sibling_page_count,
+                    )
+                    take_fast_path = True
+            except Exception:
+                pass
+
+        if take_fast_path:
             final_pdf = output_notebook_dir / f"{safe_name}.pdf"
             if copy_existing_pdf(sibling_pdf, final_pdf):
                 _stamp_pdf_metadata(final_pdf, notebook)
